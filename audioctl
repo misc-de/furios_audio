@@ -1299,7 +1299,12 @@ bt_mic() {
             printf '         Switch it on again with: audioctl bt-mic on\n' >&2
         fi
         printf 'Recording %s s - say something.\n' "${arg:-3}"
-        bt_mic_measure "${arg:-3}" || { trap - INT TERM; return $?; }
+        # The status is taken before the trap is cleared: "trap -" succeeds,
+        # and "return $?" after it returned 0 for digital silence - the one
+        # answer a script calling "audioctl bt-mic test" was asking about.
+        local rc=0
+        bt_mic_measure "${arg:-3}" || rc=$?
+        [ "$rc" -eq 0 ] || { trap - INT TERM; return "$rc"; }
         ;;
     status)
         printf 'Bluetooth card:     %s\n' "${card:-none connected}"

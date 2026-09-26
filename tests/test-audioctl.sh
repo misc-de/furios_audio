@@ -994,6 +994,12 @@ check "and it measures all the same" "yes" \
     "$(printf '%s' "$mic_out" | grep -q "Recording 1 s" && echo yes || echo no)"
 check "the number arrives after the warning" "yes" \
     "$(printf '%s' "$mic_out" | grep -qE "digital silence|distinct value" && echo yes || echo no)"
+# bt_mic_measure fails on silence so that a script can tell; the command that
+# wraps it used to clear its trap first and then return that trap's 0.
+check "and bt-mic test fails on silence as the measurement does" "2" \
+    "$(with_audioctl 'XDG_RUNTIME_DIR="$STUBDIR"; MIC_FIXTURE=silence bt_mic test 1 >/dev/null 2>&1; echo $?')"
+check "while a real signal passes" "0" \
+    "$(with_audioctl 'XDG_RUNTIME_DIR="$STUBDIR"; MIC_FIXTURE=speech bt_mic test 1 >/dev/null 2>&1; echo $?')"
 
 # --- preflight, when something is missing ----------------------------------
 check "pw-tunnel without its module is refused" "yes" \
