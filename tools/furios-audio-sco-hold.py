@@ -296,9 +296,16 @@ class Hold:
             self.deadline = GLib.timeout_add_seconds(MAX_HOLD_S, self._too_long)
 
     def _died(self, pid, status, *_):
-        self.watch = None
         if self.proc is None:          # stopped on purpose
+            self.watch = None
             return
+        if pid != self.proc.pid:
+            # A stream stopped on purpose, reaped only now - after the next
+            # call already started its own. stop() leaves the watch in place
+            # to reap it, so this can come late; it says nothing about the
+            # stream that is running.
+            return
+        self.watch = None
         self.proc = None
         if self.restarts >= MAX_RESTARTS:
             log("the hold keeps dying - giving up for this call")

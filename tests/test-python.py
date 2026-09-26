@@ -868,6 +868,23 @@ class ScoHoldBehaviour(unittest.TestCase):
             hold._died(4242, 0)
         self.assertEqual(len(FakePopen.started), 1)
 
+    def test_the_old_streams_death_is_not_the_new_ones(self):
+        # The watch is left in place on purpose (see above), so it can fire
+        # after the NEXT call has already started a stream of its own. Taken
+        # for that stream's death, it dropped the new one from self.proc and
+        # started a third: two streams on the headset, and the one nobody
+        # knows about any more is never stopped.
+        hold = self.hold_with("bluez_output.X")
+        self.addCleanup(setattr, FakePopen, "PID", FakePopen.PID)
+        with redirect_stdout(io.StringIO()):
+            hold.stop()
+            FakePopen.PID = 4343
+            hold.begin()
+            new = hold.proc
+            hold._died(4242, -15)
+        self.assertEqual(len(FakePopen.started), 2)
+        self.assertIs(hold.proc, new)
+
 
 class OfonoBus:
     """A system bus that answers ofono's two questions and records subscriptions."""
