@@ -800,14 +800,28 @@ switch_to() {
     if verify; then
         info "OK - sink present: $(pactl list sinks short | awk '{print $2}' | paste -sd, -)"
         info "Pulse server: $(pulse_owner)"
+        # A state directory this user cannot write - the package leaves it
+        # root's when it finds nobody to give it to - used to end in "set
+        # persistently" after a "Permission denied" nobody reads, and the
+        # next boot quietly went back to the old profile.
+        local kept=0
         case "$mode" in
-        sticky) write_state "$STICKY" "$p"; rm -f "$TRY"
-                info "set persistently (survives a reboot)" ;;
-        try)    write_state "$TRY" "$p"
-                info "only until the next reboot - then back to '$(cat "$STICKY" 2>/dev/null || echo standard)'" ;;
+        sticky) if write_state "$STICKY" "$p" 2>/dev/null; then
+                    rm -f "$TRY"
+                    info "set persistently (survives a reboot)"
+                else
+                    kept=1
+                    warn "switched, but $STICKY cannot be written - the next reboot goes back to '$(current_profile 2>/dev/null)'"
+                fi ;;
+        try)    if write_state "$TRY" "$p" 2>/dev/null; then
+                    info "only until the next reboot - then back to '$(cat "$STICKY" 2>/dev/null || echo standard)'"
+                else
+                    kept=1
+                    warn "switched, but $TRY cannot be written - status will not show this as a test"
+                fi ;;
         esac
         [ "$p" != standard ] && info "please check telephony: call, ringtone, earpiece/speaker."
-        return 0
+        return "$kept"
     fi
 
     printf 'FAILED - no sink after 15s. Falling back to standard.\n' >&2

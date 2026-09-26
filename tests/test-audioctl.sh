@@ -592,6 +592,17 @@ check "and it says what to check afterwards" "yes" \
     "$(with_audioctl 'switch_to pw-hal try 2>&1 | grep -q "check telephony" && echo yes || echo no')"
 check "a dry run changes nothing" "yes" \
     "$(with_audioctl 'DRY=1; switch_to pw-hal sticky 2>&1 | grep -q "nothing changed" && echo yes || echo no')"
+# The package leaves the state directory root's when it finds nobody to give
+# it to. The switch still happens; what must not happen is "set persistently"
+# over a file that was never written.
+persist_out=$(with_audioctl 'mkdir -p "$STATE_DIR"; rm -f "$TRY"; echo standard > "$STICKY"; chmod 555 "$STATE_DIR"; chmod 444 "$STICKY"
+    switch_to pw-hal sticky 2>&1; echo "rc=$?"; chmod 755 "$STATE_DIR"; chmod 644 "$STICKY"')
+check "a profile that cannot be stored is not reported as stored" "no" \
+    "$(printf '%s' "$persist_out" | grep -q "set persistently" && echo yes || echo no)"
+check "it says the next reboot goes back" "yes" \
+    "$(printf '%s' "$persist_out" | grep -q "next reboot goes back to 'standard'" && echo yes || echo no)"
+check "and the command fails" "yes" \
+    "$(printf '%s' "$persist_out" | grep -q "rc=1" && echo yes || echo no)"
 
 # No sink at all: the switch has to undo itself rather than leave a silent
 # phone behind. This is the one path nobody wants to discover in the field.
