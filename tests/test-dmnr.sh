@@ -64,7 +64,18 @@ cat > "$TMP/param/AudioParamOptions_vext.xml" <<'XML'
 XML
 sed "s|^PARAMDIR=.*|PARAMDIR=$TMP/param|" "$TOOL" > "$TMP/dmnr.sh"
 
-lauf() { DMNR_RUNDIR="$TMP/run" DMNR_MARKER="$TMP/marker" bash "$TMP/dmnr.sh" "$@" 2>&1; }
+# The modem's tuning memory, as the kernel creates it: closed. A plain file
+# stands in for the device, and both groups are this user's own, because
+# chgrp to audio or root is not something an unprivileged test can do - what
+# is checked is the mode, which is what the HAL runs into.
+: > "$TMP/usip"
+chmod 0600 "$TMP/usip"
+MYGROUP=$(id -gn)
+lauf() {
+    DMNR_RUNDIR="$TMP/run" DMNR_MARKER="$TMP/marker" DMNR_USIP="$TMP/usip" \
+    DMNR_USIP_GROUP="$MYGROUP" DMNR_USIP_GROUP_OFF="$MYGROUP" \
+        bash "$TMP/dmnr.sh" "$@" 2>&1
+}
 
 # The app reads these two lines and shows four states from them. Both have to
 # be there, and on their own line, or it shows the wrong one.
@@ -146,6 +157,33 @@ if command -v systemd-analyze >/dev/null 2>&1; then
     check "and systemd accepts every key in it" "" \
         "$(systemd-analyze verify "$UNIT" 2>&1 | grep -iE 'unknown key|unknown lvalue' | head -1)"
 fi
+
+# The tuning has to reach the modem. The HAL hands it over through /dev/usip,
+# which the kernel creates root-only; PipeWire runs as the phone's user, so
+# every call ran on the modem's defaults whatever the files said (HAL log,
+# 2026-09-26: "open(/dev/usip) fail, errno: 13").
+lauf off >/dev/null
+chmod 0600 "$TMP/usip"
+lauf on >/dev/null
+check "on opens the modem's tuning memory to the audio group" "660" \
+    "$(stat -c %a "$TMP/usip")"
+check "and status says the tuning reaches the modem" "yes" \
+    "$(lauf status | grep -q '^usip: .*reaches the modem' && echo yes || echo no)"
+lauf off >/dev/null
+check "off closes it again, as the kernel made it" "600" \
+    "$(stat -c %a "$TMP/usip")"
+check "and status says the HAL cannot hand it over" "yes" \
+    "$(lauf status | grep -q '^usip: .*closed' && echo yes || echo no)"
+check "the boot unit opens it too when the setting is remembered" "660" \
+    "$(touch "$TMP/marker"; lauf boot >/dev/null; stat -c %a "$TMP/usip")"
+rm -f "$TMP/marker"
+lauf off >/dev/null
+mv "$TMP/usip" "$TMP/usip.away"
+check "a device without it is told so, not failed" "yes" \
+    "$(lauf status | grep -q '^usip: .*not present' && echo yes || echo no)"
+mv "$TMP/usip.away" "$TMP/usip"
+check "as root the device path cannot be moved" "3" \
+    "$(grep -q 'DMNR_USIP DMNR_USIP_GROUP DMNR_USIP_GROUP_OFF' "$TOOL" && echo 3 || echo 0)"
 
 # Installed and removed as a pair. A marker left behind by an uninstall would
 # mount a file at boot that nothing on the system knows about any more.

@@ -47,6 +47,28 @@
 # It only takes effect once the HAL re-reads the files, i.e. on the next start
 # of the audio stack (which this script takes care of).
 #
+# The tuning never reached the modem
+# ----------------------------------
+# Found 2026-09-26 in the HAL's own log (logcat, which it writes to even under
+# hybris): at every call, and again at every route change, it loads the right
+# tuning - "Profile,Handsfree" for the speaker - and then fails to hand it over:
+#
+#   SpeechExtMemUSIP: open(/dev/usip) fail, errno: 13
+#   SpeechDriverNormal: writeAllSpeechParametersToModem(), dataSize 49152,
+#                       writeSphParamToShareMemory FAIIL!!
+#   SpeechDriverNormal: configSpeechInfo(), ... param emi valid: 0, param size: 0x0
+#
+# /dev/usip is the memory the modem reads its speech tuning from - echo
+# cancellation included - and it is root:root 0600 here, while Android's
+# init.mt6877.rc makes it media:media 0660 for the audio server. The HAL runs
+# inside PipeWire, as the phone's user, and is refused. So the modem ran every
+# call on its built-in defaults, whatever the files above said: that is why
+# turning DMNR on alone changed nothing that anyone could hear.
+#
+# "on" therefore also lets group audio (which PipeWire is in) open it, and
+# "off" puts back the state the kernel creates it in. The HAL opens it once, at
+# start, so this too needs the restart below.
+#
 # Remembering it across a reboot
 # ------------------------------
 # A bind mount is gone after a reboot by construction, so "set on" writes a
@@ -66,6 +88,9 @@ set -e
 PARAMDIR=${DMNR_PARAMDIR:-/android/vendor/etc/audio_param}
 RUNDIR=${DMNR_RUNDIR:-/run/furios-audio-dmnr}
 MARKER=${DMNR_MARKER:-/etc/furios-audio-dmnr.persistent}
+USIP=${DMNR_USIP:-/dev/usip}
+USIP_GROUP=${DMNR_USIP_GROUP:-audio}
+USIP_GROUP_OFF=${DMNR_USIP_GROUP_OFF:-root}
 
 # Two families, four situations. MTK_* is the switch, VIR_*_SUPPORT is the
 # same situation once more under the vendor's own name - and on this device
@@ -80,7 +105,7 @@ ZEIGEN="$SCHALTER|MTK_HANDSFREE_DMNR_SUPPORT|MTK_DUAL_MIC_SUPPORT|MTK_AUDIO_NUMB
 # mounting anything over a vendor file at boot. The tests need them and
 # therefore run unprivileged.
 if [ "$(id -u)" -eq 0 ]; then
-    for _v in DMNR_PARAMDIR DMNR_RUNDIR DMNR_MARKER; do
+    for _v in DMNR_PARAMDIR DMNR_RUNDIR DMNR_MARKER DMNR_USIP DMNR_USIP_GROUP DMNR_USIP_GROUP_OFF; do
         if [ -n "$(eval echo "\${$_v:-}")" ]; then
             echo "refusing to honour $_v as root" >&2
             exit 3
@@ -139,6 +164,28 @@ offen() {
     return 1
 }
 
+# The modem's speech tuning memory. A device without it has nothing to open and
+# counts as open, so that it cannot hold the switch at "off" forever.
+usip_offen() {
+    [ -e "$USIP" ] || return 0
+    [ "$(stat -c '%G %a' "$USIP" 2>/dev/null)" = "$USIP_GROUP 660" ]
+}
+
+# Both return true only when they changed something.
+usip_freigeben() {
+    [ -e "$USIP" ] || return 1
+    usip_offen && return 1
+    sudo chgrp "$USIP_GROUP" "$USIP"
+    sudo chmod 0660 "$USIP"
+}
+
+usip_sperren() {
+    [ -e "$USIP" ] || return 1
+    usip_offen || return 1
+    sudo chmod 0600 "$USIP"
+    sudo chgrp "$USIP_GROUP_OFF" "$USIP"
+}
+
 gemountete() {
     local f n=0
     for f in $(dateien); do
@@ -153,7 +200,7 @@ show() {
     # First line deliberately machine-readable - the switcher app reads it.
     # A half state is not "on": it is what the base-file-only version of this
     # script left behind, and it sounds exactly like off on a call.
-    if [ "$n" -gt 0 ] && ! offen; then
+    if [ "$n" -gt 0 ] && ! offen && usip_offen; then
         printf 'state=on\n'
     else
         printf 'state=off\n'
@@ -164,6 +211,13 @@ show() {
         printf 'persistent=yes\n'
     else
         printf 'persistent=no\n'
+    fi
+    if [ ! -e "$USIP" ]; then
+        printf 'usip:  %s not present - nothing to open\n' "$USIP"
+    elif usip_offen; then
+        printf 'usip:  %s open to group %s - the tuning reaches the modem\n' "$USIP" "$USIP_GROUP"
+    else
+        printf 'usip:  %s closed - the HAL cannot hand the tuning to the modem\n' "$USIP"
     fi
     for f in $(dateien); do
         printf 'file:  %s\n' "$f"
@@ -180,6 +234,7 @@ show() {
 
 einschalten() {
     local f rc getan=0
+    usip_freigeben && getan=$((getan + 1))
     for f in $(dateien); do
         ist_gemountet "$f" && { getan=$((getan + 1)); continue; }
         rc=0; baue_kopie "$f" || rc=$?
@@ -195,6 +250,7 @@ einschalten() {
 
 ausschalten() {
     local f getan=0
+    usip_sperren && getan=$((getan + 1))
     for f in $(dateien); do
         if ist_gemountet "$f"; then
             sudo umount "$f"
