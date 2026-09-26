@@ -61,6 +61,7 @@ import os
 import shutil
 import signal
 import subprocess
+import sys
 
 import gi
 
@@ -442,6 +443,8 @@ def main():
 
     loop = GLib.MainLoop()
     rest = [""]
+    # Why the loop ended. Only a stop that systemd asked for is a success.
+    ended = [False]
 
     def on_event(channel, condition):
         # Non-blocking on purpose: a partial line would otherwise stop the
@@ -450,7 +453,15 @@ def main():
             # The server went away, or pactl did. Give the headset back before
             # leaving - systemd restarts this, and a headset left hands-free
             # by a service that is no longer running is nobody's to fix.
+            #
+            # It only restarts on a FAILURE, though, and this used to return
+            # like a clean stop. Every profile switch restarts the sound
+            # server, and so does a WirePlumber crash: on the phone this was
+            # written for the service logged "the event stream ended" at
+            # 2026-09-25 18:44:33 and was still inactive (dead) a day later,
+            # with nothing watching for recordings at all.
             log("the event stream ended - giving up for now")
+            ended[0] = True
             switch.release(grace=False)
             loop.quit()
             return False
@@ -496,7 +507,10 @@ def main():
     # middle of a memo - is found here rather than waited for.
     watcher.look()
     loop.run()
+    if ended[0] and events.poll() is None:
+        events.terminate()
+    return 1 if ended[0] else 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

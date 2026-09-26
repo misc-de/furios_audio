@@ -14,6 +14,7 @@ import os
 import io
 import re
 import shutil as shutil_real
+import signal as signal_real
 import subprocess as subprocess_real
 import tempfile
 import sys
@@ -1988,10 +1989,83 @@ class BtMicNeedsItsTools(unittest.TestCase):
     def test_without_wpctl(self):
         self.assertIn("wpctl is not installed", self.with_tools("wpctl"))
 
+
     def test_without_audioctl(self):
         # The four steps live in audioctl. Without it this service knows when
         # but not how, and saying so beats switching nothing per event.
         self.assertIn("audioctl is not installed", self.with_tools("audioctl"))
+
+
+class BtMicTellsSystemdWhyItStopped(unittest.TestCase):
+    """Restart=on-failure restarts a service that FAILED, and nothing else.
+
+    The event stream ends whenever the sound server goes away - every profile
+    switch does that - and main() used to return like a clean stop. On the
+    phone the service logged "the event stream ended" at 2026-09-25 18:44:33
+    and was still inactive (dead) a day later.
+    """
+
+    def run_main(self, how):
+        watches, signals = [], {}
+
+        class Loop:
+            def run(self):
+                if how == "stream ends":
+                    watches[0](None, 16)          # HUP
+                else:
+                    signals[signal_real.SIGTERM]()
+
+            def quit(self):
+                pass
+
+        class Channel:
+            def set_encoding(self, _):
+                pass
+
+            def set_flags(self, _):
+                pass
+
+        class Events:
+            stdout = types.SimpleNamespace(fileno=lambda: 0)
+
+            def poll(self):
+                return 0
+
+            def terminate(self):
+                pass
+
+        def no_pactl(*_a, **_k):
+            raise OSError("no server in a test")
+
+        fakes = {
+            "GLib": types.SimpleNamespace(
+                MainLoop=Loop, PRIORITY_DEFAULT=0,
+                IOCondition=types.SimpleNamespace(IN=1, ERR=8, HUP=16),
+                IOFlags=types.SimpleNamespace(NONBLOCK=2),
+                IOChannel=types.SimpleNamespace(unix_new=lambda _fd: Channel()),
+                io_add_watch=lambda _ch, _p, _c, cb: watches.append(cb),
+                timeout_add=lambda *_a: 0, source_remove=lambda _id: None,
+                SOURCE_REMOVE=False),
+            "subprocess": types.SimpleNamespace(
+                Popen=lambda *_a, **_k: Events(), run=no_pactl, PIPE=-1,
+                DEVNULL=-3, SubprocessError=subprocess_real.SubprocessError),
+            "unix_signal_add": lambda _p, sig, cb: signals.__setitem__(sig, cb),
+        }
+        for name, fake in fakes.items():
+            self.addCleanup(setattr, btmic, name, getattr(btmic, name))
+            setattr(btmic, name, fake)
+        which = btmic.shutil.which
+        btmic.shutil.which = lambda tool: "/usr/bin/" + tool
+        self.addCleanup(setattr, btmic.shutil, "which", which)
+        with redirect_stdout(io.StringIO()):
+            return btmic.main()
+
+    def test_a_lost_event_stream_is_a_failure(self):
+        self.assertNotIn(self.run_main("stream ends"), (None, 0))
+
+    def test_being_stopped_is_not(self):
+        self.assertIn(self.run_main("stopped"), (None, 0))
+
 
 class BtMicPutsBackWhatNobodyElseWill(unittest.TestCase):
     """The leftover path, through the real Switch rather than a stand-in."""
