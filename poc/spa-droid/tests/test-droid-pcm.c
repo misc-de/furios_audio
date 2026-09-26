@@ -1875,6 +1875,66 @@ static void test_reader_failures(void)
 	free_node(this);
 }
 
+static unsigned reads_seen;
+static bool reads_again(void) { return hal_stub.reads > reads_seen; }
+
+/* Upstream's reconfigure closes the HAL input stream and opens a new one, and
+ * pa_droid_stream_read takes no lock. A call that ends while something is
+ * recording sends "normal" to a capture node whose reader is inside read()
+ * at that moment - on the phone, a use-after-free inside the HAL and a
+ * PipeWire that goes down with it. */
+static void test_audio_source_under_a_running_reader(void)
+{
+	struct impl *this;
+
+	section("the microphone put back while somebody is recording");
+	reset_all();
+	this = make_node(true, playback_info());
+	if (!check("the node is there", this != NULL))
+		return;
+	negotiate(this, 48000, 2);
+	check_int("recording", 0, start(this));
+	check("the reader is reading", wait_until(read_once));
+
+	hal_stub.reconfigure_calls = 0;
+	hal_stub.reconfigure_ms = 30;
+	check_int("the call ends", 0, apply_mode(this, "normal"));
+	check_int("the audio source is set again", 1, hal_stub.reconfigure_calls);
+	check_int("and nothing reads the stream while it is being replaced", 0,
+			hal_stub.reads_during_reconfigure);
+	check("the recording goes on afterwards", this->started);
+	reads_seen = hal_stub.reads;
+	check("on the new stream", wait_until(reads_again));
+	pause_node(this);
+	free_node(this);
+
+	/* The reopen fails and upstream leaves no stream behind. A reader
+	 * started on that dereferences NULL at its first read. */
+	reset_all();
+	this = make_node(true, playback_info());
+	negotiate(this, 48000, 2);
+	start(this);
+	wait_until(read_once);
+	hal_stub.reconfigure_works = false;
+	hal_stub.reconfigure_loses_stream = true;
+	apply_mode(this, "normal");
+	check("a stream that did not come back is not read from", !this->started);
+	pause_node(this);
+	free_node(this);
+
+	/* The same at open time: the audio source is set right after opening,
+	 * and a reopen that fails there leaves nothing to start a reader on. */
+	reset_all();
+	hal_stub.reconfigure_works = false;
+	hal_stub.reconfigure_loses_stream = true;
+	this = make_node(true, playback_info());
+	negotiate(this, 48000, 2);
+	check_int("an input that is gone after its audio source cannot open", -EIO,
+			hal_open(this));
+	check("and is not kept", this->stream == NULL);
+	free_node(this);
+}
+
 /* pthread_create returns its error, it does not set errno - reading errno
  * there once made a failed start look like a successful one. */
 static void test_start_failure(void)
@@ -2617,6 +2677,7 @@ int main(void)
 	test_apply_mode();
 	test_apply_mode_details();
 	test_audio_source_after_call();
+	test_audio_source_under_a_running_reader();
 	test_voice_volume();
 	test_listener_and_params();
 	test_buffer_size();

@@ -19,6 +19,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 #include <pulse/sample.h>
 #include <pulse/channelmap.h>
@@ -79,10 +80,16 @@ static ssize_t stub_write(struct audio_stream_out *stream, const void *buffer,
 	return (ssize_t) bytes;
 }
 
+/* Set while a reconfigure has the input stream closed. The reader thread
+ * reads it, so it goes through atomics rather than a plain field. */
+static int reconfiguring;
+
 static ssize_t stub_read(struct audio_stream_in *stream, void *buffer,
 		size_t bytes)
 {
 	(void) stream;
+	if (__atomic_load_n(&reconfiguring, __ATOMIC_SEQ_CST))
+		__atomic_add_fetch(&hal_stub.reads_during_reconfigure, 1, __ATOMIC_SEQ_CST);
 	hal_stub.reads++;
 	if (hal_stub.read_result != HAL_STUB_PASS)
 		return hal_stub.read_result;
@@ -259,6 +266,13 @@ bool pa_droid_stream_reconfigure_input(pa_droid_stream *s,
 	source = proplist ? pa_proplist_gets(proplist, EXT_PROP_AUDIO_SOURCE) : NULL;
 	snprintf(hal_stub.last_audio_source, sizeof(hal_stub.last_audio_source),
 			"%s", source ? source : "");
+	if (hal_stub.reconfigure_ms) {
+		__atomic_store_n(&reconfiguring, 1, __ATOMIC_SEQ_CST);
+		usleep(hal_stub.reconfigure_ms * 1000);
+		__atomic_store_n(&reconfiguring, 0, __ATOMIC_SEQ_CST);
+	}
+	if (hal_stub.reconfigure_loses_stream)
+		in_stream.stream = NULL;
 	return hal_stub.reconfigure_works;
 }
 

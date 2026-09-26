@@ -195,6 +195,14 @@ static bool port_is_bt_sco(const dm_config_port *dev);
 
 /* ------------------------------------------------------------------ HAL */
 
+/* Upstream's reconfigure closes the HAL input stream and opens it again; if
+ * both the reopen and its fallback fail, the stream is simply gone and the
+ * next read dereferences NULL. */
+static bool input_stream_alive(struct impl *this)
+{
+	return this->stream && this->stream->input && this->stream->input->stream;
+}
+
 static int hal_open_input(struct impl *this, const pa_sample_spec *spec,
 		const pa_channel_map *map)
 {
@@ -228,6 +236,16 @@ static int hal_open_input(struct impl *this, const pa_sample_spec *spec,
 		else
 			DIAG(this, "audio source: %s", this->audio_source);
 		pa_proplist_free(pl);
+		/* A warning is enough while there is still a stream to record
+		 * from, on whatever source. Without one, opening has failed. */
+		if (!input_stream_alive(this)) {
+			spa_log_error(this->log, NAME " input stream \"%s\" did not "
+					"come back after setting its audio source",
+					this->mix_port_name);
+			pa_droid_stream_unref(this->stream);
+			this->stream = NULL;
+			return -EIO;
+		}
 	}
 
 	/* The HAL may change rate and channel count while opening. Our port has
@@ -1996,6 +2014,7 @@ static void reapply_audio_source(struct impl *this)
 	pa_sample_spec spec;
 	pa_channel_map map;
 	pa_proplist *pl;
+	bool resume;
 
 	if (!this->stream || !this->audio_source[0])
 		return;
@@ -2010,6 +2029,18 @@ static void reapply_audio_source(struct impl *this)
 	else
 		pa_channel_map_init_stereo(&map);
 
+	/* Reconfiguring closes the HAL input stream and opens a new one, and
+	 * pa_droid_stream_read takes no lock. The reader has to be out of the
+	 * way first, or a call that ends while something records pulls the
+	 * stream out from under a read() - a use-after-free inside the HAL, and
+	 * PipeWire goes down with it. Stopped and started the way hal_restart()
+	 * does it, clock included. */
+	resume = this->started;
+	if (resume) {
+		timer_stop(this);
+		writer_stop(this, false);
+	}
+
 	pl = pa_proplist_new();
 	pa_proplist_sets(pl, EXT_PROP_AUDIO_SOURCE, this->audio_source);
 	if (!pa_droid_stream_reconfigure_input(this->stream, &spec, &map, pl))
@@ -2018,6 +2049,20 @@ static void reapply_audio_source(struct impl *this)
 	else
 		DIAG(this, "audio source back to %s", this->audio_source);
 	pa_proplist_free(pl);
+
+	if (!resume)
+		return;
+	/* A reopen that failed twice leaves no stream at all. Reading from it
+	 * would dereference NULL; staying stopped records silence until the
+	 * next Suspend closes the rest and the next Start opens it afresh. */
+	if (!input_stream_alive(this)) {
+		spa_log_error(this->log, NAME " the input did not come back after "
+				"restoring the audio source - capture stays stopped");
+		return;
+	}
+	if (writer_start(this) < 0 || timer_start(this) < 0)
+		spa_log_error(this->log, NAME " capture could not be resumed after "
+				"restoring the audio source");
 }
 
 static int apply_mode(struct impl *this, const char *mode)

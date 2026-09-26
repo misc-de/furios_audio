@@ -38,6 +38,12 @@ struct hal_stub {
 	 * phone without sound. */
 	unsigned output_opens_failing;
 	bool reconfigure_works, set_mode_works, is_primary;
+	/* Upstream's reconfigure closes the HAL input stream and opens a new
+	 * one. These make that visible: how long the stream is gone for, how
+	 * many reads arrived while it was, and a reconfigure whose reopen fails
+	 * and leaves no stream at all. */
+	unsigned reconfigure_ms, reads_during_reconfigure;
+	bool reconfigure_loses_stream;
 	bool set_input_device_works;
 	bool no_set_volume, no_voice_volume;
 	ssize_t write_result, read_result;   /* or HAL_STUB_PASS */
