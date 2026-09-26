@@ -1053,6 +1053,19 @@ static int impl_send_command(void *object, const struct spa_command *command)
 			spa_log_error(this->log, NAME " start without a negotiated format");
 			return -EIO;
 		}
+		/* "The next start will reopen it", the writer says when it gives
+		 * up - but hal_open() keeps a stream that is still there, and only
+		 * a real open clears hal_failed. A Pause and a Start inside the
+		 * idle timeout (pausing the music and pressing play again) came
+		 * back to the same dead stream, and process() went on dropping
+		 * every buffer. During a call the stream is what holds the HAL,
+		 * so it is given another try instead of being closed. */
+		if (this->hal_failed) {
+			if (this->mode_holds_hal)
+				this->hal_failed = false;
+			else
+				hal_close(this);
+		}
 		if ((res = hal_open(this)) < 0)
 			return res;
 		/* Roll partial state back: otherwise an open HAL stream or a running

@@ -1808,6 +1808,25 @@ static void test_writer_gives_up(void)
 	check_int("one warning, then silence in the log", 1, logbook.warns);
 	pause_node(this);
 	check("and the whole run is summarised once", logbook.warns == 2);
+
+	/* Pause and play again inside the idle timeout: no Suspend came in
+	 * between, and the stream that gave up is still open. */
+	hal_stub.write_result = HAL_STUB_PASS;
+	check_int("pressing play again", 0, start(this));
+	check_int("opens the stream afresh instead of keeping the dead one", 2,
+			hal_stub.output_opens);
+	check("and the node takes audio again", !this->hal_failed);
+	pause_node(this);
+
+	/* During a call the stream holds the HAL for the voice path, so it is
+	 * not closed - it only gets another try. */
+	this->hal_failed = true;
+	this->mode_holds_hal = true;
+	check_int("in a call, play again", 0, start(this));
+	check_int("keeps the stream that holds the call", 2, hal_stub.output_opens);
+	check("but tries it again", !this->hal_failed);
+	pause_node(this);
+	this->mode_holds_hal = false;
 	free_node(this);
 }
 
