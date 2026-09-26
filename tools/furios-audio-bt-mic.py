@@ -233,7 +233,15 @@ def hand_held():
             pid = int(fh.read().strip())
     except (OSError, ValueError):
         return False
-    return os.path.isdir("/proc/%d" % pid)
+    # Alive is not enough. The file stays behind whenever the hold runs out
+    # on its own, and its pid then goes to some other process - which made
+    # every leftover look deliberate for as long as that process lived. The
+    # hold is "timeout N paplay ..." and says so; audioctl checks the same.
+    try:
+        with open("/proc/%d/cmdline" % pid, "rb") as fh:
+            return b"paplay" in fh.read()
+    except OSError:
+        return False
 
 
 def setting_on():

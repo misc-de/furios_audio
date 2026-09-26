@@ -17,6 +17,7 @@ import shutil as shutil_real
 import signal as signal_real
 import subprocess as subprocess_real
 import tempfile
+import time
 import sys
 import types
 import glob
@@ -1626,9 +1627,27 @@ class BtMicKnowsAHandHeldHold(unittest.TestCase):
     def test_no_file_means_nobody_is_holding(self):
         self.assertFalse(btmic.hand_held())
 
-    def test_a_live_pid_means_somebody_is(self):
-        self.write("%d\n" % os.getpid())
+    def test_a_live_hold_means_somebody_is(self):
+        # What audioctl starts is "timeout N paplay ...".
+        hold = subprocess_real.Popen(["bash", "-c", "exec -a paplay sleep 30"])
+        self.addCleanup(hold.wait)
+        self.addCleanup(hold.kill)
+        for _ in range(200):
+            try:
+                with open("/proc/%d/cmdline" % hold.pid, "rb") as fh:
+                    if fh.read().startswith(b"paplay"):
+                        break
+            except OSError:
+                pass
+            time.sleep(0.01)
+        self.write("%d\n" % hold.pid)
         self.assertTrue(btmic.hand_held())
+
+    def test_a_pid_that_went_to_another_process_does_not_count(self):
+        # The file stays behind when the hold runs out on its own, and the
+        # pid goes to somebody else. Alive, but not a hold.
+        self.write("%d\n" % os.getpid())
+        self.assertFalse(btmic.hand_held())
 
     def test_a_pid_that_is_gone_does_not_count(self):
         # The file outlives the process it names: audioctl removes it on the

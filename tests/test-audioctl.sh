@@ -1117,12 +1117,31 @@ check "bt-mic status reports the HAL Bluetooth PCM" "yes" \
     "$(printf '%s' "$bt_status" | grep -q "HAL Bluetooth PCM:" && echo yes || echo no)"
 # With a pid file naming a process that is alive, the same line has to read
 # "running" - the branch that says so is the one nobody sees until it is wrong.
+# A process that looks like the hold: the real one is "timeout N paplay ...".
+bash -c 'exec -a paplay sleep 30' &
+fake_hold=$!
+mkdir -p "$STUBDIR/run"
+printf '%s\n' "$fake_hold" > "$STUBDIR/run/furios-audio-sco-hold.pid"
 check "a live hold is reported as running" "yes" \
-    "$(mkdir -p "$STUBDIR/run"
-       XDG_RUNTIME_DIR="$STUBDIR/run" AUDIOCTL_HOLD_PID=$$ \
-       sh -c 'printf "%s\n" "$AUDIOCTL_HOLD_PID" > "$XDG_RUNTIME_DIR/furios-audio-sco-hold.pid"' 2>/dev/null
-       XDG_RUNTIME_DIR="$STUBDIR/run" run_audioctl bt-mic status 2>/dev/null |
+    "$(XDG_RUNTIME_DIR="$STUBDIR/run" run_audioctl bt-mic status 2>/dev/null |
            grep -q "Link hold:          running" && echo yes || echo no)"
+kill "$fake_hold" 2>/dev/null; wait "$fake_hold" 2>/dev/null
+
+# The file outlives a hold that ran out, and its pid goes to somebody else.
+# That process is alive, but it is not ours: not reported as the hold, and
+# above all not sent the SIGTERM that "bt-mic off" sends the hold.
+sleep 30 &
+stranger=$!
+printf '%s\n' "$stranger" > "$STUBDIR/run/furios-audio-sco-hold.pid"
+check "a pid that went to another process is not a hold" "yes" \
+    "$(XDG_RUNTIME_DIR="$STUBDIR/run" run_audioctl bt-mic status 2>/dev/null |
+           grep -q "Link hold:          not running" && echo yes || echo no)"
+with_audioctl "XDG_RUNTIME_DIR=\"$STUBDIR/run\"; bt_sco_hold_stop" >/dev/null 2>&1
+check "and stopping the hold leaves that process alone" "yes" \
+    "$(kill -0 "$stranger" 2>/dev/null && echo yes || echo no)"
+check "while the stale file is gone" "no" \
+    "$([ -e "$STUBDIR/run/furios-audio-sco-hold.pid" ] && echo yes || echo no)"
+kill "$stranger" 2>/dev/null; wait "$stranger" 2>/dev/null
 
 
 stub_systemctl pipewire-pulse.service furios-audio-apply.service

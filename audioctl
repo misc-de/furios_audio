@@ -1179,13 +1179,33 @@ bt_sco_hold_start() {
     return 0
 }
 
+# The pid in the file, but only while it is still the hold.
+#
+# The file outlives the hold every time the hold simply runs out - "bt-mic on"
+# ends it after 600 s by default, and nothing removes the file then. Its pid
+# is free from that moment, and whatever process gets it next was sent the
+# SIGTERM meant for the hold by the next "bt-mic off" or "bt-mic on" (and
+# furios-audio-bt-mic runs "off" after every recording). The hold is
+# "timeout N paplay ..." and says so in its command line; nothing else here
+# does.
+sco_hold_live_pid() {
+    local pidfile pid
+    pidfile=$(sco_hold_pid_file) || return 1
+    pid=$(cat "$pidfile" 2>/dev/null) || return 1
+    case "$pid" in ''|*[!0-9]*) return 1 ;; esac
+    case "$(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null)" in
+    *paplay*) printf '%s' "$pid"; return 0 ;;
+    esac
+    return 1
+}
+
 bt_sco_hold_stop() {
     local pidfile pid
     pidfile=$(sco_hold_pid_file) || return 0
-    [ -r "$pidfile" ] || return 0
-    pid=$(cat "$pidfile" 2>/dev/null)
+    [ -e "$pidfile" ] || return 0
+    pid=$(sco_hold_live_pid)
     rm -f "$pidfile"
-    case "$pid" in ''|*[!0-9]*) return 0 ;; esac
+    [ -n "$pid" ] || return 0
     kill "$pid" 2>/dev/null && btlog "$BTTAG: link hold stopped"
     return 0
 }
@@ -1292,9 +1312,7 @@ bt_mic() {
         # headset, short enough that nobody stops reading.
         # A recording taken with no hold is silence no matter what the
         # microphone does, and it looks exactly like a broken headset.
-        local pidfile pid
-        pidfile=$(sco_hold_pid_file 2>/dev/null) && pid=$(cat "$pidfile" 2>/dev/null)
-        if ! { [ -n "${pid:-}" ] && kill -0 "$pid" 2>/dev/null; }; then
+        if ! sco_hold_live_pid >/dev/null; then
             printf 'WARNING: nothing is holding the link open - expect silence.\n' >&2
             printf '         Switch it on again with: audioctl bt-mic on\n' >&2
         fi
@@ -1310,9 +1328,8 @@ bt_mic() {
         printf 'Bluetooth card:     %s\n' "${card:-none connected}"
         printf 'Headset profile:    %s\n' "$(bt_active_profile "$card" 2>/dev/null || echo -)"
         printf 'Phone ports:        %s\n' "$(active_ports)"
-        local pidfile pid
-        pidfile=$(sco_hold_pid_file 2>/dev/null) && pid=$(cat "$pidfile" 2>/dev/null)
-        if [ -n "${pid:-}" ] && kill -0 "$pid" 2>/dev/null; then
+        local pid
+        if pid=$(sco_hold_live_pid); then
             printf 'Link hold:          running (pid %s)\n' "$pid"
         else
             printf 'Link hold:          not running\n'
