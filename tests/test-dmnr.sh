@@ -185,6 +185,28 @@ mv "$TMP/usip.away" "$TMP/usip"
 check "as root the device path cannot be moved" "3" \
     "$(grep -q 'DMNR_USIP DMNR_USIP_GROUP DMNR_USIP_GROUP_OFF' "$TOOL" && echo 3 || echo 0)"
 
+# Without a way to ask for the password, stop before anything is touched. The
+# app starts this with no terminal; on a phone whose sudoers wants a password
+# every sudo below failed on its own, several of them where set -e is off.
+cat > "$TMP/bin/sudo-refuses" <<'STUB'
+#!/bin/sh
+echo "sudo: a terminal is required to read the password; either use the -S option to read from standard input or configure an askpass helper" >&2
+exit 1
+STUB
+chmod +x "$TMP/bin/sudo-refuses"
+cp "$TMP/bin/sudo" "$TMP/bin/sudo-works"
+cp "$TMP/bin/sudo-refuses" "$TMP/bin/sudo"
+: > "$TMP/calls"
+chmod 0600 "$TMP/usip"
+out=$(lauf on; echo "rc=$?")
+cp "$TMP/bin/sudo-works" "$TMP/bin/sudo"
+check "without a way to ask, on fails" "yes" \
+    "$(printf '%s' "$out" | grep -q 'rc=1' && echo yes || echo no)"
+check "and says sudo's own words, which the app reads as 'ask'" "yes" \
+    "$(printf '%s' "$out" | grep -q 'askpass' && echo yes || echo no)"
+check "and nothing was mounted or restarted" "" "$(cat "$TMP/calls")"
+check "and the tuning memory was not touched" "600" "$(stat -c %a "$TMP/usip")"
+
 # Installed and removed as a pair. A marker left behind by an uninstall would
 # mount a file at boot that nothing on the system knows about any more.
 check "install-hal.sh installs the unit" "yes" \

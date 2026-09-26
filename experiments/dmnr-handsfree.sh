@@ -260,10 +260,22 @@ ausschalten() {
     [ "$getan" -gt 0 ]
 }
 
+# Ask sudo once, before anything is touched. Every step below has its own
+# sudo, and several of them sit where a failure is not fatal ("a || b" turns
+# set -e off), so without a way to ask - no terminal, no askpass, which is how
+# the app starts this on a phone whose sudoers wants a password - they would
+# fail one by one and leave a half-laid state. This way sudo's own words ("a
+# terminal is required ... askpass helper") come out first and nothing has
+# changed; the app reads them as "ask for the password".
+root_first() {
+    sudo true || { echo "sudo could not be asked - nothing was changed" >&2; exit 1; }
+}
+
 case "${1:-status}" in
 status) show ;;
 
 on)
+    root_first
     einschalten || exit 1
     echo "Modified copies mounted. Restarting the audio stack so the HAL reads them:"
     audioctl restart >/dev/null 2>&1 || true
@@ -277,6 +289,9 @@ on)
 set)
     # Same words as audioctl and gpsctl: "on"/"off" is now, "set" is now and
     # after the next reboot as well.
+    case "${2:-}" in
+    on|off) root_first ;;
+    esac
     case "${2:-}" in
     on)
         einschalten || exit 1
@@ -305,6 +320,7 @@ boot)
     ;;
 
 off)
+    root_first
     if ausschalten; then
         echo "Originals restored."
     else
