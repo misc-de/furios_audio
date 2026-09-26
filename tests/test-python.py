@@ -982,9 +982,78 @@ class ScoHoldMain(unittest.TestCase):
     def test_it_subscribes_to_both_ends_of_a_call(self):
         self.run_main()
         self.assertTrue(self.ran, "it has to keep running, not return at once")
+        # ofono's two ends of a call on the system bus, and callaudiod's report
+        # of a call set up on the session bus (the same fake here).
+        session = sco.Gio.bus_get_sync(sco.Gio.BusType.SESSION, None)
         members = [args[2] for args in self.bus.subscriptions]
-        self.assertEqual(members, ["CallAdded", "CallRemoved"])
+        if session is not self.bus:
+            members += [args[2] for args in session.subscriptions]
+        self.assertEqual(members, ["CallAdded", "CallRemoved",
+                                   "PropertiesChanged"])
         self.assertIn("watching ofono", self.ofono_appears())
+
+    def callaudio(self, mode, iface=None):
+        """callaudiod announcing a new AudioMode, with pw-metadata recorded."""
+        ran = []
+        sco.subprocess = types.SimpleNamespace(
+            Popen=FakePopen, DEVNULL=-3, SubprocessError=Exception,
+            run=lambda argv, **_kw: ran.append(argv))
+        # On the session bus, which is self.bus here and an MPRIS bus in the
+        # subclass that runs these again with music playing.
+        session = sco.Gio.bus_get_sync(sco.Gio.BusType.SESSION, None)
+        handler = next(args[-1] for args in session.subscriptions
+                       if args[2] == "PropertiesChanged")
+        with redirect_stdout(io.StringIO()):
+            handler(None, None, None, None, None, FakeVariant(
+                [iface or sco.CALLAUDIO_NAME, {"AudioMode": mode}, []]))
+        return ran
+
+    def test_callaudiods_report_is_passed_to_wireplumber(self):
+        # droid-bluetooth-call.lua cannot hear D-Bus; this is how it learns
+        # that callaudiod is done and the long wait can be cut short.
+        self.run_main()
+        self.assertEqual(self.callaudio(1), [[
+            "pw-metadata", "-n", "default", "0", "furios.callaudio.mode", "call"]])
+        self.assertEqual(self.callaudio(0)[0][-1], "default")
+
+    def test_a_mode_it_does_not_know_is_not_passed_on(self):
+        self.run_main()
+        self.assertEqual(self.callaudio(7), [])
+
+    def test_another_interface_on_the_same_object_is_ignored(self):
+        self.run_main()
+        self.assertEqual(self.callaudio(1, iface="org.example.Other"), [])
+
+    def test_the_answer_starts_the_wait_for_the_profile_again(self):
+        # The wait for hands-free starts with the first ring. A phone left
+        # ringing for longer than twelve seconds used to give up before the
+        # call was even answered - and a call answered on the headset then had
+        # no link and no sound.
+        sco.hands_free_sink = lambda: None
+        self.run_main()
+        added, _removed = self.handlers()
+        timers = []
+        original = sco.GLib.timeout_add
+        sco.GLib.timeout_add = lambda ms, fn, *args: timers.append(args) or 1
+        self.addCleanup(setattr, sco.GLib, "timeout_add", original)
+        with redirect_stdout(io.StringIO()):
+            added(None, None, None, None, None,
+                  FakeVariant(["/ril_0/voicecall01"]))
+        self.callaudio(1)
+        self.assertEqual(len(timers), 2)
+        waited, epoch = timers[-1]
+        self.assertEqual(waited, sco.POLL_MS, "the twelve seconds start over")
+        self.assertNotEqual(epoch, timers[0][1],
+                            "and the old wait stands down")
+
+    def test_a_report_without_a_call_waits_for_nothing(self):
+        self.run_main()
+        timers = []
+        original = sco.GLib.timeout_add
+        sco.GLib.timeout_add = lambda ms, fn, *args: timers.append(args) or 1
+        self.addCleanup(setattr, sco.GLib, "timeout_add", original)
+        self.callaudio(1)
+        self.assertEqual(timers, [])
 
     def test_it_subscribes_before_asking_what_is_up(self):
         # In the other order a call that starts between the asking and the
@@ -1088,6 +1157,11 @@ class MprisBus:
         self.status = dict(status or {})
         self.fail_on = set(fail_on)
         self.sent = []
+        self.subscriptions = []
+
+    def signal_subscribe(self, *args):
+        self.subscriptions.append(args)
+        return len(self.subscriptions)
 
     def call_sync(self, dest, path, iface, method, args, reply, flags,
                   timeout, cancellable):

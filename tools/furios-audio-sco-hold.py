@@ -64,12 +64,27 @@ except (ValueError, ImportError):
 HANDS_FREE_PREFIX = "headset-head-unit"
 
 # How long to wait for the hands-free profile to appear after a call starts,
-# and how often to look. The Lua script waits for the card to go quiet before
-# it switches - measured at about +1.05 s - and callaudiod's own sequence can
-# push that out. Twelve seconds is far longer than that and still over well
-# before anyone has finished saying hello twice.
-POLL_MS = 250
+# and how often to look. The Lua script switches as soon as callaudiod reports
+# the call set up, or after a second of quiet if that report never comes.
+# Twelve seconds is far longer than that and still over well before anyone
+# has finished saying hello twice - counted from the answer, not from the
+# first ring (see CallAudio below).
+#
+# Every look is a pactl round trip of about 15 ms. At 250 ms the hold came up
+# 330 ms after the headset reached hands-free (2026-09-25 18:20:33), and that
+# is time in which the caller already talks and nobody hears them.
+POLL_MS = 100
 MAX_WAIT_MS = 12000
+
+# callaudiod says when it has finished setting a call up: AudioMode turns to
+# 1 only once its last port change has gone through (operation_complete_cb in
+# cad-pulse.c). That is the moment droid-bluetooth-call.lua waits for, and it
+# cannot hear D-Bus itself, so the answer is passed on through PipeWire's
+# "default" metadata, which it can watch.
+CALLAUDIO_NAME = "org.mobian_project.CallAudio"
+CALLAUDIO_PATH = "/org/mobian_project/CallAudio"
+CALLAUDIO_MODE_KEY = "furios.callaudio.mode"
+CALLAUDIO_MODES = {0: "default", 1: "call"}
 
 # If the stream dies while the call is still up - a profile change tears the
 # node out from under it - put it back, but not forever. A loop that restarts a
@@ -325,6 +340,22 @@ class Hold:
         GLib.timeout_add(POLL_MS, self.begin, waited + POLL_MS, self.epoch)
         return False
 
+    def restart_wait(self):
+        """Start the twelve seconds again, from now.
+
+        CallAdded arrives with the first ring, and a phone left ringing for
+        longer than the wait used to find no hands-free profile yet - it only
+        comes once the call is answered - and gave up: a call answered on the
+        headset after a long ring would have had no link and no sound. The
+        answer is what callaudiod reports, so the wait is started over there.
+        """
+        if self.running():
+            return
+        # A poll still in flight belongs to the old wait; moving the epoch on
+        # makes it stand down, exactly as stop() does.
+        self.epoch += 1
+        self.begin()
+
     def stop(self):
         # Anything still waiting was waiting for this call. Moving the epoch on
         # is what calls it off; the poll itself fires once more and returns.
@@ -346,6 +377,18 @@ class Hold:
         except OSError:
             proc.terminate()
         log("hold stopped")
+
+
+def tell_wireplumber(mode):
+    """Pass callaudiod's mode on to droid-bluetooth-call.lua."""
+    try:
+        subprocess.run(["pw-metadata", "-n", "default", "0",
+                        CALLAUDIO_MODE_KEY, mode],
+                       stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                       stderr=subprocess.DEVNULL, timeout=5)
+    except (OSError, subprocess.SubprocessError) as err:
+        # Only costs speed: the Lua script falls back to waiting for quiet.
+        log("could not tell WirePlumber the call audio mode: %s" % err)
 
 
 def existing_calls(system):
@@ -382,12 +425,13 @@ def main():
     hold = Hold()
     calls = set()
     try:
-        players = Players(Gio.bus_get_sync(Gio.BusType.SESSION, None))
+        session = Gio.bus_get_sync(Gio.BusType.SESSION, None)
     except GLib.Error as err:
         # The hold matters more than the music: without a session bus the
         # call still gets its link, only the music runs on.
         log("no session bus - music will not be paused for calls: %s" % err)
-        players = None
+        session = None
+    players = Players(session) if session else None
 
     def on_added(_conn, _sender, _path, _iface, _signal, params):
         path = params.unpack()[0]
@@ -420,6 +464,27 @@ def main():
     system.signal_subscribe("org.ofono", "org.ofono.VoiceCallManager",
                             "CallRemoved", None, None,
                             Gio.DBusSignalFlags.NONE, on_removed)
+
+    def on_callaudio(_conn, _sender, _path, _iface, _signal, params):
+        iface, changed, _invalidated = params.unpack()
+        if iface != CALLAUDIO_NAME or "AudioMode" not in changed:
+            return
+        mode = CALLAUDIO_MODES.get(changed["AudioMode"])
+        if mode is None:
+            return
+        tell_wireplumber(mode)
+        if mode == "call" and calls:
+            hold.restart_wait()
+
+    # Only the change is passed on, never the state at start: a mode that was
+    # already "call" when this came up says nothing about a call starting now,
+    # and the Lua script treats the key as a signal, not as a reading.
+    if session and shutil.which("pw-metadata"):
+        session.signal_subscribe(CALLAUDIO_NAME,
+                                 "org.freedesktop.DBus.Properties",
+                                 "PropertiesChanged", CALLAUDIO_PATH,
+                                 CALLAUDIO_NAME, Gio.DBusSignalFlags.NONE,
+                                 on_callaudio)
 
     def ofono_appeared(_conn, _name, _owner):
         # Either ofono is starting after this service - the usual order at

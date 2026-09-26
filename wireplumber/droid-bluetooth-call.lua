@@ -79,7 +79,19 @@ MAX_DEFENDS = 3
 -- happens only when nothing has moved for this long. callaudiod's own
 -- sequence is about 200 ms end to end, so a second of silence means it is
 -- finished.
+--
+-- That second is also the largest part of the silence after answering on the
+-- headset: 1.9 s from answer to sound, measured 2026-09-25 18:20, of which
+-- 1.05 s was this wait. callaudiod knows when it is finished - AudioMode turns
+-- to 1 once its last port change has gone through - and furios-audio-sco-hold
+-- passes that on as furios.callaudio.mode in the "default" metadata. Once it
+-- has said so, only a short settle is left, for anything that follows right
+-- behind (a speaker toggle is a separate callaudiod operation). Without the
+-- report - the helper not running, an older one - it is the full second, as
+-- before.
 QUIET_MS = 1000
+SETTLED_MS = 200
+CALLAUDIO_MODE_KEY = "furios.callaudio.mode"
 
 -- How often to look at the codec while the link is being built, and how long
 -- that counts as "being built".
@@ -106,6 +118,11 @@ saved_routes = nil
 -- number knows something moved after it was armed, and stands down.
 quiet_token = 0
 took_over = false
+
+-- Whether callaudiod has reported this call set up. Cleared when the call
+-- ends, not when it starts: the report can only come after the voicecall
+-- profile, but a headset connected mid-call starts the wait long after it.
+callaudio_done = false
 
 -- What the phone's nodes were last told, and a token for the codec watch that
 -- works like quiet_token: a round that fires with a stale one is from a call
@@ -405,7 +422,7 @@ function watchCodec (dev, card, elapsed)
   end)
 end
 
-function takeOver (dev, card)
+function takeOver (dev, card, why)
   took_over = true
   local prof = setBtProfile (card, "headset-head-unit")
              or setBtProfile (card, "headset-head-unit-cvsd")
@@ -418,8 +435,8 @@ function takeOver (dev, card)
   local src  = setRouteByName (dev, BT_SOURCE_ROUTE)
 
   log:info (string.format (
-      "bluetooth call: headset profile %s, codec %s, output %s, input %s",
-      prof or "NOT set",
+      "bluetooth call (%s): headset profile %s, codec %s, output %s, input %s",
+      why or "?", prof or "NOT set",
       wbs and ("bt_wbs=" .. wbs .. ", " .. tostring (from))
            or "unknown - the HAL keeps its narrow-band default",
       sink and "set" or "NOT set", src and "set" or "NOT set"))
@@ -451,14 +468,15 @@ end
 function waitForQuiet (dev, card)
   quiet_token = quiet_token + 1
   local mine = quiet_token
+  local why = callaudio_done and "callaudiod done" or "quiet"
 
-  Core.timeout_add (QUIET_MS, function ()
+  Core.timeout_add (callaudio_done and SETTLED_MS or QUIET_MS, function ()
     -- Something moved after this timer was armed, or the call ended: either
     -- way this one is not the timer that acts.
     if mine ~= quiet_token or not in_bt_call then
       return false
     end
-    local ok, err = pcall (function () takeOver (dev, card) end)
+    local ok, err = pcall (function () takeOver (dev, card, why) end)
     if not ok then
       in_bt_call = false
       saved_routes = nil
@@ -470,6 +488,7 @@ end
 
 function leaveBtCall (dev, card)
   in_bt_call = false
+  callaudio_done = false
   codec_token = codec_token + 1
   if saved_routes then
     for _, name in pairs (saved_routes) do
@@ -604,6 +623,36 @@ bluetooth_call_hook = SimpleEventHook {
 }
 
 bluetooth_call_hook:register ()
+
+-- callaudiod's report, passed on by furios-audio-sco-hold. It only shortens the
+-- wait: it never takes over by itself, and anything that moves afterwards
+-- still starts the (short) wait again.
+callaudio_mode_hook = SimpleEventHook {
+  name = "metadata/droid-bluetooth-call-callaudio",
+  interests = {
+    EventInterest {
+      Constraint { "event.type", "=", "metadata-changed" },
+      Constraint { "metadata.name", "=", "default" },
+      Constraint { "event.subject.key", "=", CALLAUDIO_MODE_KEY },
+    },
+  },
+  execute = function (event)
+    local ok, err = pcall (function ()
+      callaudio_done = event:get_properties () ["event.subject.value"] == "call"
+      if callaudio_done and in_bt_call and not took_over then
+        local dev, card = droidCard (), btCard ()
+        if dev ~= nil and card ~= nil then
+          waitForQuiet (dev, card)
+        end
+      end
+    end)
+    if not ok then
+      log:warning ("bluetooth call: callaudiod report - " .. tostring (err))
+    end
+  end,
+}
+
+callaudio_mode_hook:register ()
 
 -- Keep the headset in hands-free for the length of the call.
 --

@@ -487,6 +487,63 @@ end
 T.check_equal("but the card is still taken over exactly once - the timer armed "
               .. "before the move stands down", 1, profiles)
 
+-- callaudiod says when it is done. The full second of quiet was most of the
+-- silence after answering on the headset (1.05 of 1.9 s, 2026-09-25 18:20);
+-- once callaudiod has reported the call set up, only a short settle is left.
+local function callaudio(mode)
+  local hook = wp.hooks["metadata/droid-bluetooth-call-callaudio"]
+  T.traced(function () hook.execute({
+    get_properties = function () return { ["event.subject.value"] = mode } end,
+  }) end)
+end
+
+setup()
+dev = wp.add("device", droid_card("voicecall"))
+wp.add("device", bt_card())
+hook = wp.hooks["monitor/droid-bluetooth-call"]
+T.traced(function () hook.execute({ get_subject = function () return dev end }) end)
+T.check_equal("without a report the wait is the full second", 1000,
+              wp.calls_of("timeout_add")[1].args[1])
+callaudio("call")
+T.check_equal("the report arms a new wait", 2, #wp.calls_of("timeout_add"))
+T.check("and a short one", wp.calls_of("timeout_add")[2].args[1] < 1000)
+T.traced(function () hook.execute({ get_subject = function () return dev end }) end)
+T.check("something moving after the report still only waits the short time",
+        wp.calls_of("timeout_add")[3].args[1] < 1000)
+wp.reset()
+T.traced(function () wp.fire_timers() end)
+profiles = 0
+for _, c in ipairs(wp.calls_of("set_params")) do
+  if c.args[2] == "Profile" then profiles = profiles + 1 end
+end
+T.check_equal("and the card is taken over exactly once", 1, profiles)
+
+-- The report alone never takes over: no call on the headset, nothing to do.
+setup()
+dev = wp.add("device", droid_card("default"))
+wp.add("device", bt_card())
+wp.reset()
+callaudio("call")
+T.check_equal("a report outside a Bluetooth call arms nothing", 0,
+              #wp.calls_of("timeout_add"))
+
+-- And it does not outlive the call: the next call waits the full second again
+-- until callaudiod has spoken for that one.
+setup()
+dev = wp.add("device", droid_card("voicecall"))
+wp.add("device", bt_card())
+hook = wp.hooks["monitor/droid-bluetooth-call"]
+T.traced(function () hook.execute({ get_subject = function () return dev end }) end)
+callaudio("call")
+T.traced(function () wp.fire_timers() end)
+dev.params.Profile = { { name = "default" } }
+T.traced(function () hook.execute({ get_subject = function () return dev end }) end)
+dev.params.Profile = { { name = "voicecall" } }
+wp.reset()
+T.traced(function () hook.execute({ get_subject = function () return dev end }) end)
+T.check_equal("the next call starts from the full second", 1000,
+              wp.calls_of("timeout_add")[1].args[1])
+
 -- WirePlumber re-picks a profile whenever a card's profile list changes, and
 -- picks A2DP. With music playing just before the call that happened 330 ms
 -- after the takeover (2026-09-25 18:08:20), the hold landed on the A2DP sink,
