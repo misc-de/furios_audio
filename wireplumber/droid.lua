@@ -245,6 +245,18 @@ end
 device:connect ("create-object", createNode)
 device:connect ("object-removed", function (parent, id)
   parent:store_managed_object (id, nil)
+  -- What was delivered went to the node that is gone. The card removes its
+  -- nodes on the "off" profile and builds new ones when it comes back, and a
+  -- new node starts on its default output: with the old state still cached,
+  -- the route (a wired headset, say) was never sent again, because it had
+  -- not changed as far as this script could tell. The object id is the
+  -- card.profile.device the routes are keyed by (0 playback, 1 capture).
+  last_route[id] = nil
+  last_route_volume[id] = nil
+  if id == 0 then
+    last_mode = nil
+    last_volume = nil
+  end
 end)
 device:activate (Feature.SpaDevice.ENABLED | Feature.Proxy.BOUND)
 device_hook:register ()

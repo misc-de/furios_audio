@@ -204,6 +204,16 @@ local forgotten = wp.calls_of("store_managed_object")
 T.check_equal("an object taken back is forgotten", 1, #forgotten)
 T.check("by storing nothing in its place", forgotten[1].args[2] == nil)
 
+-- And the node that comes back in its place - the card removes its nodes on
+-- the "off" profile and builds new ones after - starts on its default output.
+-- It has to be told the route again, although the route never changed.
+wp.reset()
+T.traced(function () activate.args[2](nil, nil) end)
+local again = {}
+for _, s in ipairs(props_sent()) do again[s.key] = s.value end
+T.check_equal("a node built again is told the route again", "output-speaker",
+              again["droid.route"])
+
 -- The mixer reports a volume change. Outside a call it is the graph's business;
 -- during one it has to reach the HAL.
 setup(true)
