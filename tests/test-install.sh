@@ -115,4 +115,36 @@ while read -r source_file; do
 done < <(grep -hoE 'sudo install -[Dm0-9]+ +[^ "$]+' install.sh install-hal.sh | awk '{print $4}')
 check "both install scripts copy only files that exist here" 0 "$missing"
 
+echo
+echo "-- the package's postinst does not write through a link it finds"
+# Run as root on an upgrade, in a directory that by then belongs to the user.
+# "profile" there is whatever they made it, and a symlink to /etc/shadow used
+# to come out world-readable: [ -e ] followed it, skipped the write, and the
+# chmod 0644 after it followed it as well. Run here unprivileged against a
+# stand-in directory - the chmod follows a link for anyone who owns the target.
+T=$(mktemp -d)
+trap 'rm -rf "$T"' EXIT
+awk '/^cat > "\$STAGE\/DEBIAN\/postinst" <</{on=1; next} on && /^EOF$/{exit} on' \
+    packaging/build-deb.sh > "$T/postinst.in"
+run_postinst() {
+    sed -e "s|/var/lib/furios-audio|$1|g" -e "s|/usr/bin/audioctl|$T/no-audioctl|g" \
+        "$T/postinst.in" > "$T/postinst"
+    SUDO_USER=$(id -un) sh "$T/postinst" configure >/dev/null 2>&1
+}
+check "postinst found in build-deb.sh" yes "$([ -s "$T/postinst.in" ] && echo yes || echo no)"
+
+mkdir "$T/a"
+: > "$T/victim"; chmod 0600 "$T/victim"
+ln -s "$T/victim" "$T/a/profile"
+run_postinst "$T/a"
+check "a linked profile's target keeps its mode" 600 "$(stat -c %a "$T/victim")"
+check "the profile is a file of its own afterwards" "standard" \
+    "$([ -f "$T/a/profile" ] && [ ! -L "$T/a/profile" ] && cat "$T/a/profile")"
+
+mkdir "$T/b"
+ln -s "$T/created-by-root" "$T/b/profile"
+run_postinst "$T/b"
+check "a dangling link creates nothing" no \
+    "$([ -e "$T/created-by-root" ] && echo yes || echo no)"
+
 summary

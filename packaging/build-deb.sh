@@ -227,8 +227,26 @@ set -e
 existing=$(stat -c %U /var/lib/furios-audio 2>/dev/null || echo "")
 mkdir -p /var/lib/furios-audio
 chmod 0755 /var/lib/furios-audio
-[ -e /var/lib/furios-audio/profile ] || echo standard > /var/lib/furios-audio/profile
-chmod 0644 /var/lib/furios-audio/profile
+# The same care as for the chown below, for the write and the chmod. On an
+# upgrade the directory already belongs to the user, and "profile" can be
+# anything they put there. A symlink to /etc/shadow was enough: "[ -e ]"
+# follows it and skips the write, and then root's chmod 0644 followed it too
+# and made the target world-readable. A dangling one was worse - the echo
+# created whatever file it named, as root. A link is never ours, so it goes;
+# a new file is made under a fresh name and renamed into place, which
+# replaces whatever appeared meanwhile rather than writing through it.
+for f in profile profile.try; do
+    [ -L "/var/lib/furios-audio/$f" ] && rm -f "/var/lib/furios-audio/$f"
+done
+if [ ! -e /var/lib/furios-audio/profile ]; then
+    new=$(mktemp /var/lib/furios-audio/.profile.XXXXXX)
+    echo standard > "$new"
+    chmod 0644 "$new"
+    mv -fT "$new" /var/lib/furios-audio/profile
+fi
+if [ -f /var/lib/furios-audio/profile ] && [ ! -L /var/lib/furios-audio/profile ]; then
+    chmod 0644 /var/lib/furios-audio/profile
+fi
 
 owner=${SUDO_USER:-}
 [ -z "$owner" ] && [ -n "${PKEXEC_UID:-}" ] && owner=$(getent passwd "$PKEXEC_UID" | cut -d: -f1)
