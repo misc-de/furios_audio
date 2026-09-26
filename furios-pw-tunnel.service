@@ -13,7 +13,12 @@ StartLimitBurst=5
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/pipewire -c /usr/local/share/furios-audio/tunnel.conf
+# Both places, like apply and verify: install.sh puts tunnel.conf under
+# /usr/local, the package under /usr. This used to name /usr/local only, so on
+# a package install audioctl's preflight found the file (it looks in both),
+# enabled this unit, and the unit failed at every start - the pw-tunnel
+# profile could never come up from the .deb.
+ExecStart=/bin/sh -c 'c=/usr/local/share/furios-audio/tunnel.conf; test -e "$$c" || c=/usr/share/furios-audio/tunnel.conf; exec /usr/bin/pipewire -c "$$c"'
 Restart=on-failure
 RestartSec=2
 Slice=session.slice

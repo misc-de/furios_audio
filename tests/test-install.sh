@@ -58,6 +58,19 @@ for prog in $programme; do
     check "the package ships $prog"    yes "$(enthalten packaging/build-deb.sh "$prog")"
 done
 
+# A unit is copied as it is into both installs, so a path under /usr/local in
+# its ExecStart has to come with the /usr one the package uses. The tunnel unit
+# named /usr/local alone and could never start from the .deb.
+for unit in furios-*.service systemd/*.service; do
+    one_place=0
+    while read -r line; do
+        for p in $(printf '%s\n' "$line" | grep -oE '/usr/local/[^ ";]+'); do
+            case "$line" in *"/usr/${p#/usr/local/}"*) ;; *) one_place=$((one_place + 1)) ;; esac
+        done
+    done < <(grep -E '^Exec(Start|Stop)(Pre|Post)?=' "$unit")
+    check "$(basename "$unit") finds its files in both installs" 0 "$one_place"
+done
+
 echo
 echo "-- every WirePlumber script is installed, removed and packaged"
 for lua in wireplumber/*.lua wireplumber/*.conf; do
