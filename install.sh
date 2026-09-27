@@ -81,15 +81,10 @@ sudo chmod 0755 /var/lib/furios-audio
 # and the phone went back to the shipped stack at the next boot without anyone
 # asking for it. The package's postinst has always done it this way.
 [ -e /var/lib/furios-audio/profile ] || echo standard > /var/lib/furios-audio/profile
-# An older, root-based audioctl put its masks in /etc/systemd/user. systemd
-# reads ~/.config/systemd/user first, but a mask in /etc goes on masking, and
-# this version has no way to remove it - so the first switch after an upgrade
-# bounced off it, waited fifteen seconds for a sink and fell back. Every user
-# who ran the old version had it; nobody was ever told to clear it by hand.
-#
-# Safe here: unmasking starts nothing, and furios-audio-apply.service runs
-# Before=pulseaudio.service pipewire.service at the next login and writes the
-# stored profile's masks under $HOME before anything starts.
+# An older, root-based audioctl left a drop-in in /etc/systemd/user and could
+# rename the droid monitor; migrate clears exactly those. Masks there are no
+# longer touched - three of them belong to furios-quirks-device, and audioctl
+# gets past any mask with a copy of the unit under $HOME.
 sudo /usr/local/bin/audioctl migrate
 
 systemctl --user daemon-reload
