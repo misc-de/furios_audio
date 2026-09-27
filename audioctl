@@ -1399,6 +1399,85 @@ bt_mic() {
     return 0
 }
 
+# --- the Bluetooth music codec ----------------------------------------------
+#
+# WirePlumber plays music over the best A2DP codec both ends know - AAC on
+# most headsets here, and AAC is the expensive one: 7.2 % of a core against
+# 4.3 % for SBC (bluebinder plus wireplumber, measured 2026-09-12). SBC sounds
+# audibly worse than SBC-XQ, and SBC-XQ sounds like AAC and saves nothing.
+# So it is the owner's choice, kept as the WirePlumber setting below and held
+# by droid-bluetooth-codec.lua on connect, after a call and when it changes.
+# No root: the setting lives in WirePlumber's own state for this user.
+BT_CODEC_SETTING=furios.bluetooth-codec
+BT_CODECS="auto sbc sbc_xq aac aptx aptx_hd ldac"
+
+# What is set, "auto" when nothing is, and nothing at all when WirePlumber
+# does not know the setting - an older install, or no WirePlumber running.
+bt_codec_preference() {
+    local out
+    out=$(wpctl settings "$BT_CODEC_SETTING" 2>/dev/null) || return 1
+    printf '%s\n' "$out" | sed -n 's/^Value: "\{0,1\}\([A-Za-z0-9_]*\)"\{0,1\}.*/\1/p' | head -1
+}
+
+# One line per A2DP profile of the card: "<profile> <codec> <available>".
+# The codec comes from the description, as in the Lua script: plain a2dp-sink
+# is the best codec and only its description says which.
+bt_codec_profiles() {
+    local card=$1
+    pactl list cards 2>/dev/null | awk -v card="$card" '
+        /^Card #/ { mine = 0 }
+        $1 == "Name:" { mine = ($2 == card) }
+        mine && $1 ~ /^a2dp-sink[^:]*:$/ {
+            prof = $1; sub(/:$/, "", prof)
+            codec = $0
+            if (!sub(/.*, codec /, "", codec)) next
+            sub(/\).*/, "", codec)
+            codec = tolower(codec); gsub(/[ -]/, "_", codec)
+            avail = ($0 ~ /available: no\)/) ? "no" : "yes"
+            print prof, codec, avail
+        }'
+}
+
+bt_codec_status() {
+    local pref card active prof codec avail offered=""
+    pref=$(bt_codec_preference) || pref=""
+    printf 'preference=%s\n' "${pref:-unsupported}"
+    card=$(pactl list short cards 2>/dev/null | awk '/bluez_card/ {print $2; exit}')
+    [ -n "$card" ] || return 0
+    printf 'card=%s\n' "$card"
+    active=$(bt_active_profile "$card" 2>/dev/null)
+    while read -r prof codec avail; do
+        [ -n "$prof" ] || continue
+        [ "$avail" = yes ] && offered="$offered $codec"
+        [ "$prof" = "$active" ] && printf 'active=%s\n' "$codec"
+    done <<EOF
+$(bt_codec_profiles "$card")
+EOF
+    printf 'offered=%s\n' "${offered# }"
+}
+
+bt_codec() {
+    local want=${1:-status} got
+    case "$want" in
+    status) bt_codec_status; return 0 ;;
+    esac
+    case " $BT_CODECS " in
+    *" $want "*) ;;
+    *) die "bt-codec needs one of: status $BT_CODECS" ;;
+    esac
+    if [ "$DRY" = 1 ]; then
+        echo "[dry-run] wpctl settings --save $BT_CODEC_SETTING $want"
+        return 0
+    fi
+    wpctl settings --save "$BT_CODEC_SETTING" "$want" >/dev/null 2>&1
+    # wpctl answers 0 for a setting it does not know, so the answer is read
+    # back rather than trusted.
+    got=$(bt_codec_preference) || got=""
+    [ "$got" = "$want" ] \
+        || die "WirePlumber did not take the setting (it says: ${got:-nothing}) - is furios_pipewire's 51-bluez-ofono.conf installed and WirePlumber restarted since?"
+    info "Bluetooth codec: $want"
+}
+
 usage() {
     cat <<EOF
 audioctl - switch the audio stack
@@ -1421,6 +1500,10 @@ audioctl - switch the audio stack
   audioctl bt-mic on [s]       hold the link for s seconds (default 600)
   audioctl bt-mic status       headset profile, phone ports, link hold, and
                                whether the HAL has the Bluetooth line open
+  audioctl bt-codec [status]   music codec for Bluetooth headsets: what is
+                               chosen, what the connected headset offers
+  audioctl bt-codec <codec>    auto (WirePlumber's best), sbc, sbc_xq, aac,
+                               aptx, aptx_hd or ldac - applies at once
   audioctl revert              back to standard immediately
   audioctl boot                write the stored profile's configuration
                                without starting anything (used at boot)
@@ -1532,6 +1615,7 @@ case "${1:-status}" in
     rescue) rescue ;;
     bt-call) [ $# -ge 2 ] || die "bt-call needs 'on', 'off' or 'watch'."; bt_call "$2" ;;
     bt-mic) [ $# -ge 2 ] || die "bt-mic needs 'on', 'off', 'test' or 'status'."; bt_mic "$2" "${3:-}" ;;
+    bt-codec) bt_codec "${2:-status}" ;;
     revert) switch_to standard sticky ;;
     migrate) migrate_legacy ;;
     verify) verify && echo "OK - sink present." || { echo "no sink." >&2; exit 1; } ;;

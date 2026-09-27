@@ -47,8 +47,16 @@ take the sound with it silently.
     audioctl bt-call watch       put a call on the Bluetooth headset and
                                  hold it there
     audioctl bt-mic on|off       record from the headset outside a call
+    audioctl bt-codec [codec]    music codec for Bluetooth headsets: auto,
+                                 sbc, sbc_xq, aac, aptx, aptx_hd or ldac
 
 Nothing here needs root.
+
+`bt-codec` is a WirePlumber setting (`furios.bluetooth-codec`), held by
+`droid-bluetooth-codec.lua` when a headset connects, after a call and at once
+when it changes; `auto` leaves WirePlumber's own choice. Measured here while
+music plays (bluebinder plus wireplumber): AAC 7.2 %, SBC-XQ 7.0 %, SBC 4.3 %
+of a core - SBC saves 40 % and sounds audibly worse, SBC-XQ sounds like AAC.
 
 There are two safety nets: `try` drops the profile at the next reboot, and if
 no sink appears within 15 s of a switch, `audioctl` falls back to `standard` by

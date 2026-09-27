@@ -56,6 +56,7 @@ sudo rm -f /usr/local/share/wireplumber/scripts/monitors/droid.lua \
            /usr/local/share/wireplumber/scripts/monitors/droid-input-follows-output.lua \
            /usr/local/share/wireplumber/scripts/monitors/droid-default-sink-policy.lua \
            /usr/local/share/wireplumber/scripts/monitors/droid-bluetooth-call.lua \
+           /usr/local/share/wireplumber/scripts/monitors/droid-bluetooth-codec.lua \
            /usr/local/share/wireplumber/wireplumber.conf.d/50-droid.conf \
            /usr/local/share/wireplumber/wireplumber.conf.d/51-bluez-ofono.conf
 sudo rm -f /etc/systemd/system/ofono.service.d/30-furios-audio-hfp.conf

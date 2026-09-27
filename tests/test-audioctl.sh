@@ -1473,4 +1473,57 @@ check "the refusal says what it is protecting" "yes" \
     "$(run_audioctl migrate 2>&1 | grep -q 'deleting arbitrary files' && echo yes || echo no)"
 rm -f "$STUBDIR/id"
 
+# --- the Bluetooth music codec ------------------------------------------------
+#
+# The headset as this phone sees it: plain a2dp-sink is AAC, and only its
+# description says so.
+cat > "$STUBDIR/pactl" <<'PACTL'
+#!/bin/sh
+case "$*" in
+"list short cards") printf '61\tdroid\tmodule\n81\tbluez_card.F4_9D_8A_00_00_01\tmodule\n' ;;
+"list cards") cat <<'OUT'
+Card #61
+	Name: droid
+	Profiles:
+		default: Playback and Capture (sinks: 1, sources: 1, priority: 100, available: yes)
+	Active Profile: default
+
+Card #81
+	Name: bluez_card.F4_9D_8A_00_00_01
+	Profiles:
+		a2dp-sink: High Fidelity Playback (A2DP Sink, codec AAC) (sinks: 1, sources: 1, priority: 133, available: yes)
+		a2dp-sink-sbc: High Fidelity Playback (A2DP Sink, codec SBC) (sinks: 1, sources: 1, priority: 130, available: yes)
+		a2dp-sink-sbc_xq: High Fidelity Playback (A2DP Sink, codec SBC-XQ) (sinks: 1, sources: 1, priority: 131, available: yes)
+		a2dp-sink-aptx_hd: High Fidelity Playback (A2DP Sink, codec aptX HD) (sinks: 1, sources: 1, priority: 132, available: no)
+		headset-head-unit: Headset Head Unit (HSP/HFP, codec mSBC) (sinks: 1, sources: 1, priority: 3, available: yes)
+	Active Profile: a2dp-sink-sbc
+OUT
+;;
+esac
+PACTL
+chmod +x "$STUBDIR/pactl"
+stub wpctl 0 'Value: "sbc" (Saved: true)'
+status_out=$(with_audioctl 'bt_codec_status')
+check "the preference is read from WirePlumber" "yes" \
+    "$(printf '%s\n' "$status_out" | grep -qx 'preference=sbc' && echo yes || echo no)"
+check "the active codec comes from the profile, not its name" "yes" \
+    "$(printf '%s\n' "$status_out" | grep -qx 'active=sbc' && echo yes || echo no)"
+check "plain a2dp-sink is offered as what it is, and SBC-XQ by its name" "yes" \
+    "$(printf '%s\n' "$status_out" | grep -qx 'offered=aac sbc sbc_xq' && echo yes || echo no)"
+check "a profile that is not available is not offered, hands-free never" "no" \
+    "$(printf '%s\n' "$status_out" | grep -q 'aptx_hd\|msbc' && echo yes || echo no)"
+stub wpctl 0 "Setting 'furios.bluetooth-codec' not found"
+check "a WirePlumber without the setting says so rather than 'auto'" "yes" \
+    "$(with_audioctl 'bt_codec_status' | grep -qx 'preference=unsupported' && echo yes || echo no)"
+check "and setting it fails loudly - wpctl itself answers 0" "yes" \
+    "$(says 'bt_codec sbc' 'did not take the setting')"
+check "an unknown codec is refused before anything is asked" "yes" \
+    "$(says 'bt_codec mp3' 'bt-codec needs one of')"
+make_recording_stub wpctl 0 'Value: "aac" (Saved: true)'
+rm -f "$STUBDIR/wpctl.args"
+with_audioctl 'bt_codec aac' >/dev/null 2>&1
+check "a choice is saved, so it outlives WirePlumber" "yes" \
+    "$(grep -q -- '--save furios.bluetooth-codec aac' "$STUBDIR/wpctl.args" && echo yes || echo no)"
+rm -f "$STUBDIR/pactl" "$STUBDIR/wpctl" "$STUBDIR/wpctl.args"
+
 summary

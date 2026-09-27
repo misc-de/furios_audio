@@ -172,6 +172,7 @@ local script_state = {
   "in_bt_call", "saved_routes", "mixer", "device", "log",
   "gave_up", "defends", "quiet_token", "took_over",
   "announced_wbs", "codec_token", "call_profile", "callaudio_done",
+  "tried",
 }
 
 -- Run every timer callback that is waiting, the way the main loop would.
@@ -238,10 +239,18 @@ function M.install()
   -- nothing back, which is what happens on a device where the schema entry is
   -- missing - and the scripts have to behave then too.
   M.settings = {}
+  M.subscribers = {}
   Settings = {
     get_boolean = function (key)
       record("settings_get", key)
       return M.settings[key]
+    end,
+    get_string = function (key)
+      record("settings_get", key)
+      return M.settings[key]
+    end,
+    subscribe = function (key, fn)
+      M.subscribers[key] = fn
     end,
   }
 
