@@ -58,6 +58,11 @@ when it changes; `auto` leaves WirePlumber's own choice. Measured here while
 music plays (bluebinder plus wireplumber): AAC 7.2 %, SBC-XQ 7.0 %, SBC 4.3 %
 of a core - SBC saves 40 % and sounds audibly worse, SBC-XQ sounds like AAC.
 
+The Bluetooth helpers - held SCO link, headset microphone, reconnect, pause on
+disconnect - run under `pw-hal` only. Under `standard` the phone behaves
+exactly as shipped: the units stay enabled but skip themselves
+(`ExecCondition`, `audioctl is pw-hal`), and a switch stops or starts them.
+
 There are two safety nets: `try` drops the profile at the next reboot, and if
 no sink appears within 15 s of a switch, `audioctl` falls back to `standard` by
 itself. Note that this checks whether a sink *exists*, not whether sound comes

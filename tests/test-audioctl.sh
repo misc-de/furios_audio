@@ -1526,4 +1526,43 @@ check "a choice is saved, so it outlives WirePlumber" "yes" \
     "$(grep -q -- '--save furios.bluetooth-codec aac' "$STUBDIR/wpctl.args" && echo yes || echo no)"
 rm -f "$STUBDIR/pactl" "$STUBDIR/wpctl" "$STUBDIR/wpctl.args"
 
+# --- our Bluetooth helpers belong to pw-hal ---------------------------------
+#
+# Under PulseAudio the phone is to behave as shipped, so the shipped behaviour
+# can be tested on its own. The units stay enabled; their ExecCondition asks
+# "audioctl is pw-hal", and a switch stops or starts what runs now.
+run_is() {
+    AUDIOCTL_STATE_DIR="$STUBDIR/state" bash "$HERE/../audioctl" is "$1"
+}
+mkdir -p "$STUBDIR/state"; rm -f "$STUBDIR/state/profile.try"
+echo standard > "$STUBDIR/state/profile"
+check_status "is: standard stored, asked for pw-hal -> no" 1 run_is pw-hal
+check_status "is: standard stored, asked for standard -> yes" 0 run_is standard
+echo pw-hal > "$STUBDIR/state/profile.try"
+check_status "is: a test profile counts until the reboot" 0 run_is pw-hal
+rm -f "$STUBDIR/state/profile.try"
+check_status "is: without a profile name it refuses" 1 run_is ""
+
+: > "$STUBDIR/systemctl.log"
+cat > "$STUBDIR/systemctl" <<STUB
+#!/bin/sh
+printf '%s\n' "\$*" >> "$STUBDIR/systemctl.log"
+case "\$2" in is-active) exit 3 ;; esac
+exit 0
+STUB
+chmod +x "$STUBDIR/systemctl"
+( AUDIOCTL_LIB=1 AUDIOCTL_STATE_DIR="$STUBDIR/state" AUDIOCTL_ETCU="$STUBDIR/etc" \
+    . "$HERE/../audioctl"; apply standard ) >/dev/null 2>&1
+for u in pause-on-disconnect sco-hold bt-mic bt-reconnect; do
+    check "switching to PulseAudio stops furios-audio-$u" "yes" \
+        "$(grep -qx -- "--user stop furios-audio-$u.service" "$STUBDIR/systemctl.log" && echo yes || echo no)"
+done
+check "and disables none of them - the condition keeps them quiet" "" \
+    "$(grep -E -- '--user disable furios-audio-(sco|bt|pause)' "$STUBDIR/systemctl.log")"
+for u in furios-audio-pause-on-disconnect furios-audio-sco-hold furios-audio-bt-mic furios-audio-bt-reconnect; do
+    check "$u.service only runs under pw-hal" "yes" \
+        "$(grep -q '^ExecCondition=.* is pw-hal' "$HERE/../$u.service" && echo yes || echo no)"
+done
+rm -f "$STUBDIR/systemctl"
+
 summary

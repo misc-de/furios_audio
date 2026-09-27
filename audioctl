@@ -511,6 +511,7 @@ apply() {
     known_profile "$p" || { warn "refusing to apply \"$p\" - not a profile"; return 1; }
     case "$p" in
     standard)
+        pw_helpers stop
         droid_monitor on
         run uctl stop furios-pw-tunnel.service 2>/dev/null
         run uctl disable furios-pw-tunnel.service 2>/dev/null
@@ -542,6 +543,7 @@ apply() {
         # streams and the tunnel sink would stay unused - which is exactly how
         # this profile failed on its first test. Its droid monitor stays off,
         # otherwise it would reach for the HAL that PulseAudio holds.
+        pw_helpers stop
         droid_monitor off
         mask   pipewire-pulse.service pipewire-pulse.socket
         # shellcheck disable=SC2046
@@ -813,6 +815,23 @@ ensure_safety_net() {
     return 0
 }
 
+# Our Bluetooth work - the held link, the headset microphone, dialling a
+# headset back, pausing on disconnect - belongs to pw-hal. Under PulseAudio
+# the phone is to behave exactly as shipped, so the shipped behaviour can be
+# tested on its own (decided 27.9.2026). The units stay enabled and say so
+# themselves at every start (ExecCondition, "audioctl is pw-hal"); a switch
+# only has to stop or start what is running now.
+PW_ONLY_HELPERS="furios-audio-pause-on-disconnect.service furios-audio-sco-hold.service furios-audio-bt-mic.service furios-audio-bt-reconnect.service"
+
+pw_helpers() {
+    local verb=$1 u
+    for u in $PW_ONLY_HELPERS; do
+        uctl is-enabled "$u" >/dev/null 2>&1 || continue
+        run uctl "$verb" "$u" >/dev/null 2>&1 || true
+    done
+    return 0
+}
+
 switch_to() {
     local p=$1 mode=$2 prev
     check_legacy "$p" "$mode" || return 1
@@ -863,6 +882,8 @@ switch_to() {
                     warn "switched, but $TRY cannot be written - status will not show this as a test"
                 fi ;;
         esac
+        # After the state file: the helpers' ExecCondition reads it.
+        [ "$p" = pw-hal ] && pw_helpers start
         [ "$p" != standard ] && info "please check telephony: call, ringtone, earpiece/speaker."
         return "$kept"
     fi
@@ -1485,6 +1506,7 @@ audioctl - switch the audio stack
   audioctl status              show the current state
   audioctl toggle              switch: standard <-> pw-hal (in test mode)
   audioctl list                list the profiles
+  audioctl is <profile>        exit 0 if that is the stored profile
   audioctl try <profile>       switch, falls back on reboot
   audioctl set <profile>       switch and remember persistently
   audioctl restart             restart the audio stack, keep the profile
@@ -1584,6 +1606,9 @@ case "${1:-status}" in
                 switch_to pw-hal try
             fi ;;
     list)   printf '%s\n' $PROFILES ;;
+    # For ExecCondition: exit 0 when the stored profile is the one named.
+    is)     [ $# -ge 2 ] || die "profile missing."
+            [ "$(current_profile 2>/dev/null)" = "$2" ] ;;
     try)    [ $# -ge 2 ] || die "profile missing."; switch_to "$2" try ;;
     set)    [ $# -ge 2 ] || die "profile missing."; switch_to "$2" sticky ;;
     # What furios-audio-apply.service runs before the stack starts: drop the
