@@ -149,8 +149,56 @@ do_unmask() {
         if [ -L "$ETCU/$u" ] && [ "$(readlink "$ETCU/$u")" = /dev/null ]; then
             rm -f "$ETCU/$u" || { warn "could not unmask $u"; return 1; }
         fi
+        # A mask below ours - FuriOS ships three in /etc/systemd/user - is
+        # covered by a copy, and a copy we made once is kept current.
+        if system_masked "$u" || is_shadow "$ETCU/$u"; then
+            shadow_write "$u" || return 1
+        fi
     done
     return 0
+}
+
+# Units masked below $HOME, which we must not remove.
+#
+# furios-quirks-device ships pipewire-pulse.service, pipewire-pulse.socket and
+# wireplumber.service in /etc/systemd/user as links to /dev/null. An earlier
+# "audioctl migrate" deleted them - package files - and the next update of that
+# package would have put them back and taken pw-hal down with it at every boot.
+#
+# A link to the original in ~/.config does NOT get past such a mask: systemd
+# resolves it into the search path, finds the mask and reports "Too many
+# levels of symbolic links" (tried on the phone, systemd 261). A regular file
+# does - it is the first fragment found, and the mask below it is never read.
+# So the copy is a plain file with a marker, rewritten from the original at
+# every login (apply runs at boot), which keeps it from going stale after a
+# PipeWire or WirePlumber update changes the unit.
+VENDOR_UNITS=${AUDIOCTL_VENDOR_UNITS:-"/usr/local/lib/systemd/user /usr/lib/systemd/user"}
+SHADOW_MARK='# furios-audio: copy of'
+system_masked() { legacy_masked "$1"; }
+is_shadow() {
+    [ -f "$1" ] && [ ! -L "$1" ] && head -n1 "$1" 2>/dev/null | grep -q "^$SHADOW_MARK "
+}
+vendor_unit() {
+    local d
+    for d in $VENDOR_UNITS; do
+        [ -f "$d/$1" ] && [ ! -L "$d/$1" ] && { printf '%s' "$d/$1"; return 0; }
+    done
+    return 1
+}
+shadow_write() {
+    local u=$1 src tmp
+    # Never over a file somebody else put there.
+    if [ -e "$ETCU/$u" ] && ! is_shadow "$ETCU/$u"; then
+        warn "$ETCU/$u is not ours - leaving it, $u stays as it is"
+        return 1
+    fi
+    src=$(vendor_unit "$u") || { warn "no unit file for $u in $VENDOR_UNITS - it stays masked"; return 1; }
+    mkdir -p "$ETCU" || return 1
+    tmp=$(mktemp "$ETCU/.$u.XXXXXX") || return 1
+    { printf '%s %s - the system masks it, this copy outranks the mask.\n' "$SHADOW_MARK" "$src"
+      printf '# Rewritten by audioctl at every login; do not edit.\n'
+      cat "$src"; } > "$tmp" && chmod 0644 "$tmp" && mv -f "$tmp" "$ETCU/$u" \
+        || { rm -f "$tmp"; warn "could not write $ETCU/$u"; return 1; }
 }
 
 mask()   { run do_mask "$@"; }
@@ -196,22 +244,21 @@ legacy_droid_off() {
     done
     printf '%s' "${out# }"
 }
+# Masks are not on this list any more. Three of them belong to
+# furios-quirks-device, and a mask of any origin is covered by a copy under
+# $HOME (see shadow_write) - removing one is never needed and, for a package
+# file, wrong.
 legacy_leftovers() {
     out=
-    for u in pipewire-pulse.service pipewire-pulse.socket wireplumber.service \
-             pulseaudio.service pulseaudio.socket; do
-        legacy_masked "$u" && out="$out $LEGACY_ETCU/$u"
-    done
     f=$(legacy_dropin);    [ -n "$f" ] && out="$out $f"
     f=$(legacy_droid_off); [ -n "$f" ] && out="$out $f"
     printf '%s' "${out# }"
 }
 
 # Which units a profile needs to be able to START. Read by apply(), which
-# unmasks exactly these, and by blocking_leftovers(), which asks whether an
-# old mask in /etc covers one of them.
+# unmasks exactly these - under $HOME, and past a mask in /etc by a copy.
 #
-# Both from one place on purpose. The two lists were going to be written out
+# Kept in one place on purpose. The list was going to be written out
 # twice, and a check that believes a switch needs pulseaudio while the switch
 # actually needs wireplumber is worse than no check: it passes, and then the
 # switch fails anyway.
@@ -225,13 +272,12 @@ profile_unmasks() {
 
 # Of the leftovers, the ones that would defeat a switch to THIS profile.
 #
-# Not simply "is there anything left over". standard masks pipewire-pulse and
-# wireplumber itself, so those leftovers are what standard wants anyway -
-# refusing over them would block "audioctl revert" and "audioctl rescue", the
-# two commands whose whole job is to get sound back. What matters is only
-# whether something we cannot reach masks a unit this profile has to start.
+# Not simply "is there anything left over": refusing over something a profile
+# does not care about would block "audioctl revert" and "audioctl rescue", the
+# two commands whose whole job is to get sound back. Masks never block - a
+# copy under $HOME gets past them (shadow_write).
 #
-# The drop-in is the other way round: standard and pw-tunnel REMOVE it, so the
+# The drop-in: standard and pw-tunnel REMOVE it, so the
 # copy in /etc would go on applying to pipewire. pw-hal writes its own under
 # $HOME, which systemd reads first, so for pw-hal it is harmless. And a droid
 # monitor renamed to .off is missing for pw-hal alone - the other two profiles
@@ -240,10 +286,7 @@ profile_unmasks() {
 # would assign to the caller's "local p" - and switch_to's p is the profile
 # being switched to.
 blocking_leftovers() {
-    _p=$1 _out= _u= _f=
-    for _u in $(profile_unmasks "$_p"); do
-        legacy_masked "$_u" && _out="$_out $LEGACY_ETCU/$_u"
-    done
+    _p=$1 _out= _f=
     case "$_p" in
     standard|pw-tunnel) _f=$(legacy_dropin) ;;
     pw-hal)             _f=$(legacy_droid_off) ;;
@@ -1438,7 +1481,7 @@ fi
 # else in here tests whether it can write rather than testing id -u.
 if [ "$(id -u)" -eq 0 ]; then
     for _v in AUDIOCTL_ETCU AUDIOCTL_LIB AUDIOCTL_STATE_DIR AUDIOCTL_WPCONF_DIR \
-              AUDIOCTL_LEGACY_ETCU AUDIOCTL_LEGACY_WP \
+              AUDIOCTL_LEGACY_ETCU AUDIOCTL_LEGACY_WP AUDIOCTL_VENDOR_UNITS \
               AUDIOCTL_PLUGIN_DIR AUDIOCTL_PW_MODULE_DIR; do
         if [ -n "${!_v:-}" ]; then
             die "refusing to honour $_v as root - that would make this a way of deleting arbitrary files."

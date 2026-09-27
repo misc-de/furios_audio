@@ -1215,6 +1215,24 @@ and it described exactly the directory the bug was about.
 
 ---
 
+**Correction, 27.9.: those three masks were not ours.** `dpkg -S` names
+`furios-quirks-device` as the owner of `/etc/systemd/user/pipewire-pulse.service`,
+`pipewire-pulse.socket` and `wireplumber.service` - FuriOS ships them, because
+stock FuriOS runs PulseAudio. `migrate` deleted package files, `dpkg -V`
+listed all three as `missing`, and the next update of that package would have
+put them back: pw-hal silent at every boot, the fallback to standard after
+thirty seconds, and the switch refusing with advice to run `migrate` again.
+
+Now nothing removes a mask. `do_unmask` covers one below `$HOME` with a copy
+of the unit in `~/.config/systemd/user`, marked in its first line and
+rewritten from `/usr/lib/systemd/user` at every login, so it follows a
+PipeWire update. It has to be a copy: a link to the original does not get
+past the mask - systemd follows it back into the search path, meets the mask
+and answers "Too many levels of symbolic links" (tried on the phone,
+systemd 261; a plain file in a higher directory loads and enables normally).
+Masks are no longer leftovers, never block a switch, and `migrate` only
+handles the old drop-in and the renamed droid monitor.
+
 ## The boot that never finished, and a phone with no sound
 
 Applying the stored profile unconditionally was right, and it made a deadlock

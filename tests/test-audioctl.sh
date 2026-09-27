@@ -341,12 +341,18 @@ check "without a configuration to point at, it refuses" "no" \
 
 # --- what an older version left behind -------------------------------------
 #
-# A mask still sitting in /etc/systemd/user keeps masking, and audioctl can no
-# longer remove it. It has to say so rather than quietly fight it.
+# A drop-in still sitting in /etc/systemd/user keeps applying, and audioctl can
+# no longer remove it. It has to say so rather than quietly fight it.
 check "leftovers in /etc are noticed" "yes" \
-    "$(with_audioctl 'LEGACY_ETCU="$STUBDIR/legacy"; mkdir -p "$LEGACY_ETCU"
-        ln -sf /dev/null "$LEGACY_ETCU/pulseaudio.service"
+    "$(with_audioctl 'LEGACY_ETCU="$STUBDIR/legacy"; mkdir -p "$LEGACY_ETCU/pipewire.service.d"
+        : > "$LEGACY_ETCU/pipewire.service.d/50-furios-audio.conf"
         warn_about_legacy 2>&1 | grep -q "still wins" && echo yes || echo no')"
+# A mask is not a leftover: FuriOS ships three of them, and a copy under $HOME
+# gets past any mask. Calling them leftovers is what had them deleted.
+check "a mask in /etc is not called a leftover" "" \
+    "$(with_audioctl 'LEGACY_ETCU="$STUBDIR/legacy-mask"; mkdir -p "$LEGACY_ETCU"
+        ln -sf /dev/null "$LEGACY_ETCU/wireplumber.service"
+        warn_about_legacy 2>&1')"
 check "and a clean system says nothing" "" \
     "$(with_audioctl 'LEGACY_ETCU="$STUBDIR/nothing-here"; warn_about_legacy 2>&1')"
 check "migrating without root is refused" "yes" \
@@ -365,7 +371,7 @@ case "${1:-}" in
 esac
 IDEOF
 chmod +x "$STUBDIR/id"
-check "as root it clears the mask an older version left" "no" \
+check "as root it still leaves a mask alone - it may be a package file" "yes" \
     "$(with_audioctl 'LEGACY_ETCU="$STUBDIR/lg1"; mkdir -p "$LEGACY_ETCU"
         ln -sf /dev/null "$LEGACY_ETCU/pulseaudio.service"
         migrate_legacy >/dev/null 2>&1
@@ -412,16 +418,12 @@ lg_mask "$STUBDIR/b_std" pipewire-pulse.service pipewire-pulse.socket wireplumbe
 lg_mask "$STUBDIR/b_pul" pulseaudio.service pulseaudio.socket
 lg_mask "$STUBDIR/b_none"
 
-check "standard is not blocked by the masks standard sets itself" "" \
+check "standard is not blocked by the masks FuriOS ships" "" \
     "$(with_audioctl 'LEGACY_ETCU="$STUBDIR/b_std"; blocking_leftovers standard')"
-check "but pw-hal is - those are the units it has to start" "yes" \
-    "$(with_audioctl 'LEGACY_ETCU="$STUBDIR/b_std"
-        blocking_leftovers pw-hal | grep -q wireplumber.service && echo yes || echo no')"
-check "a masked pulseaudio blocks standard" "yes" \
-    "$(with_audioctl 'LEGACY_ETCU="$STUBDIR/b_pul"
-        blocking_leftovers standard | grep -q pulseaudio.service && echo yes || echo no')"
-check "and does not block pw-hal, which masks it anyway" "" \
-    "$(with_audioctl 'LEGACY_ETCU="$STUBDIR/b_pul"; blocking_leftovers pw-hal')"
+check "and neither is pw-hal - a copy gets past them" "" \
+    "$(with_audioctl 'LEGACY_ETCU="$STUBDIR/b_std"; blocking_leftovers pw-hal')"
+check "a masked pulseaudio does not block standard either" "" \
+    "$(with_audioctl 'LEGACY_ETCU="$STUBDIR/b_pul"; blocking_leftovers standard')"
 check "a clean /etc blocks nothing" "" \
     "$(with_audioctl 'LEGACY_ETCU="$STUBDIR/b_none"; blocking_leftovers pw-hal')"
 
@@ -466,16 +468,22 @@ check "and apply() takes its unmask list from there, not a second copy" "0" \
 # cause was in the output, twelve lines above the part that looked like the
 # verdict.
 check "a blocked switch refuses" "1" \
-    "$(with_audioctl 'LEGACY_ETCU="$STUBDIR/b_std"
+    "$(with_audioctl 'LEGACY_ETCU="$STUBDIR/b_none"
+        d="$STUBDIR/wp-off/wireplumber.conf.d"; mkdir -p "$d"; : > "$d/50-droid.conf.off"
+        LEGACY_WP="$STUBDIR/wp-off"
         check_legacy pw-hal sticky >/dev/null 2>&1; echo $?')"
 check "and says what to run" "yes" \
-    "$(with_audioctl 'LEGACY_ETCU="$STUBDIR/b_std"
+    "$(with_audioctl 'LEGACY_ETCU="$STUBDIR/b_none"
+        d="$STUBDIR/wp-off/wireplumber.conf.d"; mkdir -p "$d"; : > "$d/50-droid.conf.off"
+        LEGACY_WP="$STUBDIR/wp-off"
         check_legacy pw-hal sticky 2>&1 | grep -q "sudo audioctl migrate" && echo yes || echo no')"
 check "and that it changed nothing" "yes" \
-    "$(with_audioctl 'LEGACY_ETCU="$STUBDIR/b_std"
+    "$(with_audioctl 'LEGACY_ETCU="$STUBDIR/b_none"
+        d="$STUBDIR/wp-off/wireplumber.conf.d"; mkdir -p "$d"; : > "$d/50-droid.conf.off"
+        LEGACY_WP="$STUBDIR/wp-off"
         check_legacy pw-hal sticky 2>&1 | grep -q "Nothing has been changed" && echo yes || echo no')"
 check "an unblocked switch is let through" "0" \
-    "$(with_audioctl 'LEGACY_ETCU="$STUBDIR/b_none"
+    "$(with_audioctl 'LEGACY_ETCU="$STUBDIR/b_none"; LEGACY_WP="$STUBDIR/wp-none"
         check_legacy pw-hal sticky >/dev/null 2>&1; echo $?')"
 
 # Never at boot. This runs at every login from furios-audio-apply.service and
@@ -483,11 +491,60 @@ check "an unblocked switch is let through" "0" \
 # refuses to configure itself until somebody runs a command over ssh is worse
 # off than one that warns.
 check "boot is never refused, only warned" "0" \
-    "$(with_audioctl 'LEGACY_ETCU="$STUBDIR/b_std"
+    "$(with_audioctl 'LEGACY_ETCU="$STUBDIR/b_none"
+        d="$STUBDIR/wp-off/wireplumber.conf.d"; mkdir -p "$d"; : > "$d/50-droid.conf.off"
+        LEGACY_WP="$STUBDIR/wp-off"
         check_legacy pw-hal boot >/dev/null 2>&1; echo $?')"
 check "and it does warn" "yes" \
-    "$(with_audioctl 'LEGACY_ETCU="$STUBDIR/b_std"
+    "$(with_audioctl 'LEGACY_ETCU="$STUBDIR/b_none"
+        d="$STUBDIR/wp-off/wireplumber.conf.d"; mkdir -p "$d"; : > "$d/50-droid.conf.off"
+        LEGACY_WP="$STUBDIR/wp-off"
         check_legacy pw-hal boot 2>&1 | grep -q "still wins" && echo yes || echo no')"
+
+# --- getting past a mask we must not remove --------------------------------
+#
+# furios-quirks-device ships wireplumber and pipewire-pulse masked in
+# /etc/systemd/user. pw-hal gets past that with a plain copy under $HOME -
+# a link does not work (systemd follows it into the mask), so a copy it is,
+# marked, and rewritten from the original every time.
+sh_setup='ETCU="$STUBDIR/sh-$1/home"; LEGACY_ETCU="$STUBDIR/sh-$1/etc"; mkdir -p "$ETCU" "$LEGACY_ETCU"
+        VENDOR_UNITS="$STUBDIR/sh-$1/vendor"; mkdir -p "$VENDOR_UNITS"
+        printf "[Service]\nExecStart=/usr/bin/wireplumber\n" > "$VENDOR_UNITS/wireplumber.service"'
+shadow_case() { with_audioctl "set -- $1; $sh_setup
+        $2"; }
+check "a unit masked in /etc gets a copy under \$HOME" "yes" \
+    "$(shadow_case a 'ln -sf /dev/null "$LEGACY_ETCU/wireplumber.service"
+        do_unmask wireplumber.service
+        [ -f "$ETCU/wireplumber.service" ] && [ ! -L "$ETCU/wireplumber.service" ] \
+            && grep -q "^ExecStart=/usr/bin/wireplumber" "$ETCU/wireplumber.service" && echo yes || echo no')"
+check "marked as ours" "yes" \
+    "$(shadow_case b 'ln -sf /dev/null "$LEGACY_ETCU/wireplumber.service"
+        do_unmask wireplumber.service
+        is_shadow "$ETCU/wireplumber.service" && echo yes || echo no')"
+check "and the mask in /etc is left where it is" "/dev/null" \
+    "$(shadow_case c 'ln -sf /dev/null "$LEGACY_ETCU/wireplumber.service"
+        do_unmask wireplumber.service; readlink "$LEGACY_ETCU/wireplumber.service"')"
+check "an unmasked system gets no copy" "no" \
+    "$(shadow_case d 'do_unmask wireplumber.service
+        [ -e "$ETCU/wireplumber.service" ] && echo yes || echo no')"
+check "the copy follows the original after an update" "yes" \
+    "$(shadow_case e 'ln -sf /dev/null "$LEGACY_ETCU/wireplumber.service"
+        do_unmask wireplumber.service
+        printf "[Service]\nExecStart=/usr/bin/wireplumber --new\n" > "$VENDOR_UNITS/wireplumber.service"
+        do_unmask wireplumber.service
+        grep -q -- "--new" "$ETCU/wireplumber.service" && echo yes || echo no')"
+check "a file somebody else put there is refused and kept" "mine" \
+    "$(shadow_case f 'ln -sf /dev/null "$LEGACY_ETCU/wireplumber.service"
+        echo mine > "$ETCU/wireplumber.service"
+        do_unmask wireplumber.service 2>/dev/null; cat "$ETCU/wireplumber.service"')"
+check "without an original to copy it fails rather than pretending" "1" \
+    "$(shadow_case g 'ln -sf /dev/null "$LEGACY_ETCU/wireplumber.service"
+        rm -f "$VENDOR_UNITS/wireplumber.service"
+        do_unmask wireplumber.service 2>/dev/null; echo $?')"
+check "masking again replaces the copy with our own mask" "/dev/null" \
+    "$(shadow_case h 'ln -sf /dev/null "$LEGACY_ETCU/wireplumber.service"
+        do_unmask wireplumber.service; do_mask wireplumber.service
+        readlink "$ETCU/wireplumber.service"')"
 
 # --- the safety net --------------------------------------------------------
 stub_systemctl none none
