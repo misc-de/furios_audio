@@ -1357,7 +1357,7 @@ echo pw-hal > "$STUBDIR/state/profile"
 echo pw-hal > "$STUBDIR/state/profile.try"
 out=$(run_boot_check)
 check "a silent boot falls back to standard" "yes" \
-    "$(printf '%s' "$out" | grep -q "produced no sink" && echo yes || echo no)"
+    "$(printf '%s' "$out" | grep -q "produced no phone output" && echo yes || echo no)"
 check "and says so once it has sound again" "yes" \
     "$(printf '%s' "$out" | grep -q "standard restored" && echo yes || echo no)"
 check "the fallback really restarts the stack" "yes" \
@@ -1366,12 +1366,34 @@ check "the fallback really restarts the stack" "yes" \
 check "it discards the test profile" "gone" \
     "$([ -e "$STUBDIR/state/profile.try" ] && echo there || echo gone)"
 
-# The stored profile stays. A boot that came up silent is a reason to make
-# sound work now, not to drop somebody's choice without telling them - the
-# interactive fallback does not rewrite it either, and status shows the
-# mismatch.
-check "but it does not rewrite the stored profile" "pw-hal" \
+# Changed 28.9.: the fallback is recorded. A profile that does not come up
+# after an update would otherwise be retried at every boot, each time half a
+# minute of silence - the worst case is to be the shipped default, with a note
+# saying when and from what.
+check "the fallback is recorded as standard" "standard" \
     "$(cat "$STUBDIR/state/profile")"
+check "with a note of when and from what" "yes" \
+    "$(grep -q ' pw-hal$' "$STUBDIR/state/fell-back" 2>/dev/null && echo yes || echo no)"
+check "WirePlumber is killed before it is stopped" "yes" \
+    "$(grep -q -- '--user kill -s KILL wireplumber.service' "$STUBDIR/systemctl.log" && echo yes || echo no)"
+check "status tells about it" "yes" \
+    "$(AUDIOCTL_STATE_DIR="$STUBDIR/state" bash "$HERE/../audioctl" status 2>/dev/null \
+       | grep -q '^Fell back: ' && echo yes || echo no)"
+rm -f "$STUBDIR/state/fell-back"
+
+# A headset is not the phone. Under pw-hal a Bluetooth sink that comes up
+# while the HAL gave PipeWire nothing must not pass the check.
+stub_logging_systemctl
+echo pw-hal > "$STUBDIR/state/profile"
+stub pactl 0 "71	bluez_output.F4_9D_8A_00_00_01.1	PipeWire	s16le 2ch 48000Hz	SUSPENDED"
+out=$(run_boot_check)
+check "a Bluetooth sink alone is not the phone's output" "yes" \
+    "$(printf '%s' "$out" | grep -q "produced no phone output" && echo yes || echo no)"
+stub_logging_systemctl
+echo standard > "$STUBDIR/state/profile"
+check "under standard any sink still counts" "yes" \
+    "$(run_boot_check | grep -q "profile standard has a sink" && echo yes || echo no)"
+echo pw-hal > "$STUBDIR/state/profile"
 
 # Nothing worked. Left failing on purpose: no sound is the one state nobody
 # can hear their way out of, so it belongs in "systemctl --user --failed".

@@ -471,6 +471,7 @@ wireplumber.profiles = {
     policy.droid-input-follows-output = disabled
     policy.droid-default-sink-policy = disabled
     policy.droid-bluetooth-call = disabled
+    policy.droid-bluetooth-codec = disabled
   }
 }
 WPEOF
@@ -629,23 +630,57 @@ verify() {
 # It allows the stack twice as long as an interactive switch. A boot is slower
 # than a switch on a warm system, and a fallback that fires because the HAL was
 # merely slow would be worse than what it guards against.
+# Whether the phone's own output is there - not just any sink. Under pw-hal
+# a Bluetooth headset or a USB DAC can come up while the HAL gave PipeWire
+# nothing, and speaker, earpiece and calls would stay silent behind a check
+# that passed.
+phone_sink_up() {
+    local i=0 tries=${1:-1}
+    while [ "$i" -lt "$tries" ]; do
+        pactl list sinks short 2>/dev/null | awk 'NF {print $2}' \
+            | grep -qx 'droid-sink' && return 0
+        i=$((i+1))
+        [ "$i" -lt "$tries" ] && sleep 1
+    done
+    return 1
+}
+
+# Where the boot check notes that it fell back, for status and the app.
+FELL_BACK=$STATE_DIR/fell-back
+
 boot_check() {
-    local p sinks
+    local p sinks ok=0
     p=$(current_profile)
     if verify "${BOOT_VERIFY_TRIES:-30}"; then
+        case "$p" in
+            pw-hal) phone_sink_up "${BOOT_VERIFY_TRIES:-30}" && ok=1 ;;
+            *)      ok=1 ;;
+        esac
+    fi
+    if [ "$ok" = 1 ]; then
         sinks=$(pactl list sinks short 2>/dev/null | awk '{print $2}' | paste -sd, -)
         printf 'boot check: profile %s has a sink (%s)\n' "$p" "$sinks"
         return 0
     fi
-    printf 'boot check: profile %s produced no sink. Falling back to standard.\n' "$p" >&2
-    # The stored profile is deliberately NOT rewritten, exactly as in the
-    # interactive fallback. A silent boot is a reason to make sound work now,
-    # not to quietly drop a choice somebody made: "audioctl status" shows the
-    # mismatch, and the next boot tries the profile again instead of pretending
-    # nothing happened. A test profile does go, because that is what try means.
+    printf 'boot check: profile %s produced no phone output. Falling back to standard.\n' "$p" >&2
+    # A WirePlumber stuck in a HAL call would hold the stop in apply for its
+    # full stop timeout, and this unit's own timeout could then kill the
+    # fallback half way - WirePlumber masked, PulseAudio not started.
+    uctl kill -s KILL wireplumber.service >/dev/null 2>&1 || true
     apply standard
     rm -f "$TRY"
+    # Recorded, not only applied (changed 28.9.): a profile that does not come
+    # up after an update would otherwise be tried again at every boot - half a
+    # minute of silence each time, and with standard's masks still in place
+    # the next boot cannot bring it back anyway. The worst case is to be the
+    # shipped default. The note says when and from what, so status and the
+    # app can tell somebody why the phone is on PulseAudio again.
+    write_state "$STICKY" standard 2>/dev/null || true
+    write_state "$FELL_BACK" "$(date '+%F %T') $p" 2>/dev/null || true
     if verify; then
+        # callaudiod and feedbackd still hold the server that just went away:
+        # no ringtone and no call routing until they are restarted.
+        restart_audio_clients
         printf 'boot check: standard restored.\n'
         return 0
     fi
@@ -868,7 +903,8 @@ switch_to() {
         # next boot quietly went back to the old profile.
         local kept=0
         case "$mode" in
-        sticky) if write_state "$STICKY" "$p" 2>/dev/null; then
+        sticky) rm -f "$FELL_BACK" 2>/dev/null
+                if write_state "$STICKY" "$p" 2>/dev/null; then
                     rm -f "$TRY"
                     info "set persistently (survives a reboot)"
                 else
@@ -1644,6 +1680,21 @@ Profiles:
 EOF
 }
 
+# Our ofono drop-in replaces ofonod's command line to drop one plugin. It was
+# written against the shipped "/usr/sbin/ofonod --nodetach"; if FuriLabs
+# changes that line, ours silently wins over theirs - and that is the modem.
+OFONO_UNIT=${AUDIOCTL_OFONO_UNIT:-/usr/lib/systemd/system/ofono.service}
+OFONO_DROPIN=${AUDIOCTL_OFONO_DROPIN:-/etc/systemd/system/ofono.service.d/30-furios-audio-hfp.conf}
+ofono_dropin_check() {
+    local vendor
+    [ -r "$OFONO_DROPIN" ] && [ -r "$OFONO_UNIT" ] || return 0
+    vendor=$(sed -n 's/^ExecStart=//p' "$OFONO_UNIT" | tail -1)
+    [ "$vendor" = "/usr/sbin/ofonod --nodetach" ] && return 0
+    printf 'WARNING:            ofono.service now starts "%s", and our drop-in\n' "$vendor"
+    printf '                    replaces that - remove %s\n' "$OFONO_DROPIN"
+    printf '                    or reinstall furios_audio once it has been updated for it.\n'
+}
+
 status() {
     local eff rec
     eff=$(effective_profile)
@@ -1654,6 +1705,9 @@ status() {
         printf '                    Bring it back in line with "audioctl set %s".\n' "$eff"
     fi
     printf 'Profile (persistent):%s\n' " $(cat "$STICKY" 2>/dev/null || echo standard)"
+    [ -r "$FELL_BACK" ] && printf 'Fell back:          %s - that profile gave no phone output at boot\n' \
+        "$(cat "$FELL_BACK" 2>/dev/null)"
+    ofono_dropin_check
     [ -r "$TRY" ] && printf 'Test mode:          yes - falls back on reboot\n'
     printf 'Pulse server:       %s\n' "$(pulse_owner)"
     printf 'Sinks:              %s\n' "$(pactl list sinks short 2>/dev/null | awk '{print $2}' | paste -sd, - || echo none)"
