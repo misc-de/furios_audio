@@ -162,6 +162,7 @@ with_audioctl() {
       ETCU="$STUBDIR/etc"; DROPIN="$ETCU/pipewire.service.d/50-furios-audio.conf"
       WPUSER="$STUBDIR/wpuser"; WPOFF="$WPUSER/99-furios-droid-off.conf"
       LOCAL="$STUBDIR/local"
+      BT_CODEC_SEEN="$STUBDIR/bt-codecs"
       # The built plugin and PipeWire's modules, as a directory this suite
       # owns. Without them preflight refuses the pw-hal profile, and every
       # switch test below would only ever pass on a phone that happens to
@@ -1524,7 +1525,69 @@ rm -f "$STUBDIR/wpctl.args"
 with_audioctl 'bt_codec aac' >/dev/null 2>&1
 check "a choice is saved, so it outlives WirePlumber" "yes" \
     "$(grep -q -- '--save furios.bluetooth-codec aac' "$STUBDIR/wpctl.args" && echo yes || echo no)"
-rm -f "$STUBDIR/pactl" "$STUBDIR/wpctl" "$STUBDIR/wpctl.args"
+rm -f "$STUBDIR/wpctl" "$STUBDIR/wpctl.args"
+
+# --- one headset, its own codec ------------------------------------------------
+#
+# A WirePlumber that keeps what it is told, one file per setting, and prints
+# values the way wpctl does: unquoted, "" when empty.
+mkdir -p "$STUBDIR/wp"
+cat > "$STUBDIR/wpctl" <<WPCTL
+#!/bin/sh
+d="$STUBDIR/wp"
+[ "\$1" = settings ] || exit 0
+shift
+if [ "\$1" = --save ]; then
+    shift
+    printf '%s' "\$2" | sed 's/^""\$//' > "\$d/\$1"
+    exit 0
+fi
+case "\$1" in
+furios.bluetooth-codec) echo 'Value: sbc_xq (Saved: sbc_xq)' ;;
+furios.bluetooth-codec-devices)
+    v=\$(cat "\$d/\$1" 2>/dev/null)
+    echo "Value: \${v:-\"\"} (Saved: \${v:-\"\"})" ;;
+*) echo "Setting '\$1' not found" ;;
+esac
+WPCTL
+chmod +x "$STUBDIR/wpctl"
+rm -f "$STUBDIR/bt-codecs"
+status_out=$(with_audioctl 'bt_codec_status')
+check "a WirePlumber that knows the per-headset setting says so" "yes" \
+    "$(printf '%s\n' "$status_out" | grep -qx 'per_device=yes' && echo yes || echo no)"
+check "the connected headset is named by its address" "yes" \
+    "$(printf '%s\n' "$status_out" | grep -qx 'device=F4:9D:8A:00:00:01' && echo yes || echo no)"
+check "what it offers is remembered for when it is gone" "yes" \
+    "$(grep -q '^F4:9D:8A:00:00:01	aac sbc sbc_xq	' "$STUBDIR/bt-codecs" 2>/dev/null && echo yes || echo no)"
+check "and listed, following the setting for all" "yes" \
+    "$(printf '%s\n' "$status_out" | grep -q '^known=F4:9D:8A:00:00:01|.*|default|aac,sbc,sbc_xq$' && echo yes || echo no)"
+
+with_audioctl 'bt_codec sbc --device f4:9d:8a:00:00:01' >/dev/null 2>&1
+check "a headset gets its own codec, address in any case" "F4:9D:8A:00:00:01=sbc" \
+    "$(cat "$STUBDIR/wp/furios.bluetooth-codec-devices")"
+with_audioctl 'bt_codec aac --device 98:52:3D:00:00:02' >/dev/null 2>&1
+with_audioctl 'bt_codec sbc_xq --device F4:9D:8A:00:00:01' >/dev/null 2>&1
+check "a second headset is added, a new choice replaces the old" \
+    "98:52:3D:00:00:02=aac;F4:9D:8A:00:00:01=sbc_xq" \
+    "$(cat "$STUBDIR/wp/furios.bluetooth-codec-devices")"
+check "status shows the headset's own choice" "yes" \
+    "$(with_audioctl 'bt_codec_status' | grep -q '^known=F4:9D:8A:00:00:01|.*|sbc_xq|' && echo yes || echo no)"
+with_audioctl 'bt_codec default --device 98:52:3D:00:00:02' >/dev/null 2>&1
+check "default takes a headset out again" "F4:9D:8A:00:00:01=sbc_xq" \
+    "$(cat "$STUBDIR/wp/furios.bluetooth-codec-devices")"
+with_audioctl 'bt_codec default --device F4:9D:8A:00:00:01' >/dev/null 2>&1
+check "and the last one leaves an empty list" "" \
+    "$(cat "$STUBDIR/wp/furios.bluetooth-codec-devices")"
+check "a malformed address is refused" "yes" \
+    "$(says 'bt_codec sbc --device F4:9D;rm' 'needs a Bluetooth address')"
+check "default alone, without a headset, is refused" "yes" \
+    "$(says 'bt_codec default' 'bt-codec needs one of')"
+stub wpctl 0 "Setting 'furios.bluetooth-codec-devices' not found"
+check "an older WirePlumber says it cannot, not that it did" "yes" \
+    "$(says 'bt_codec sbc --device F4:9D:8A:00:00:01' 'does not know furios.bluetooth-codec-devices')"
+check "and the status says per_device=no" "yes" \
+    "$(with_audioctl 'bt_codec_status' | grep -qx 'per_device=no' && echo yes || echo no)"
+rm -rf "$STUBDIR/pactl" "$STUBDIR/wpctl" "$STUBDIR/wp" "$STUBDIR/bt-codecs"
 
 # --- our Bluetooth helpers belong to pw-hal ---------------------------------
 #

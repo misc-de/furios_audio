@@ -18,8 +18,9 @@ local SBC_XQ = { name = "a2dp-sink-sbc_xq", index = 3,
 local HFP    = { name = "headset-head-unit", index = 4,
                  description = "Headset Head Unit (HSP/HFP, codec mSBC)" }
 
-local function bt_card(active)
-  return wp.object({ ["device.api"] = "bluez5", ["bound-id"] = 7 }, { params = {
+local function bt_card(active, addr)
+  return wp.object({ ["device.api"] = "bluez5", ["bound-id"] = 7,
+                     ["api.bluez5.address"] = addr or "F4:9D:8A:00:00:01" }, { params = {
     EnumProfile = { AAC, SBC, SBC_XQ, HFP },
     Profile = { active or AAC },
   } })
@@ -166,6 +167,36 @@ T.traced(function () wp.subscribers["furios.bluetooth-codec"]() end)
 wp.settings["furios.bluetooth-codec"] = "sbc"
 T.traced(function () wp.subscribers["furios.bluetooth-codec"]() end)
 T.check_equal("a changed setting may ask again", "2,3,2",
+              table.concat(profiles_set(), ","))
+
+-- --- one headset, its own codec ------------------------------------------------
+
+setup("auto")
+wp.settings["furios.bluetooth-codec-devices"] = "98:52:3D:00:00:02=aac;f4:9d:8a:00:00:01=sbc_xq"
+card = wp.add("device", bt_card())
+T.check_equal("a headset's own choice wins over auto, address in any case",
+              "a2dp-sink-sbc_xq", select_profile(card, AAC).name)
+card = wp.add("device", bt_card(nil, "11:22:33:44:55:66"))
+T.check_equal("a headset without one follows the setting for all",
+              "a2dp-sink", select_profile(card, AAC).name)
+
+setup("sbc")
+wp.settings["furios.bluetooth-codec-devices"] = "F4:9D:8A:00:00:01=auto"
+card = wp.add("device", bt_card())
+T.check_equal("auto for one headset means WirePlumber's best for it",
+              "a2dp-sink", select_profile(card, AAC).name)
+
+setup("sbc")
+wp.settings["furios.bluetooth-codec-devices"] = "not a list at all"
+card = wp.add("device", bt_card())
+T.check_equal("an unreadable list falls back to the setting for all",
+              "a2dp-sink-sbc", select_profile(card, AAC).name)
+
+setup("auto")
+card = wp.add("device", bt_card(AAC))
+wp.settings["furios.bluetooth-codec-devices"] = "F4:9D:8A:00:00:01=sbc"
+T.traced(function () wp.subscribers["furios.bluetooth-codec-devices"]() end)
+T.check_equal("a new choice for a connected headset applies at once", "2",
               table.concat(profiles_set(), ","))
 
 T.done()

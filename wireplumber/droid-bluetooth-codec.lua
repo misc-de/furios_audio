@@ -30,6 +30,11 @@ cutils = require ("common-utils")
 log = Log.open_topic ("s-device")
 
 SETTING = "furios.bluetooth-codec"
+-- Per headset, overriding the one above: "F4:9D:8A:00:00:01=sbc_xq;..." -
+-- a plain string, because that is what wpctl and every WirePlumber version
+-- here can store and read back. "auto" for one headset means WirePlumber's
+-- best for that one, whatever the setting above says.
+DEVICE_SETTING = "furios.bluetooth-codec-devices"
 
 -- What was last asked of each card, so a headset that refuses a codec (the
 -- profile comes straight back) is not asked again and again. Cleared when the
@@ -56,18 +61,41 @@ function codecOf (profile)
   return name:match ("^a2dp%-sink%-(.+)$")
 end
 
--- The preferred codec, or nil for "leave it to WirePlumber". An older
--- WirePlumber, a missing schema entry, anything unexpected: all of that is
--- nil, which is the behaviour without this script.
-function preferredCodec ()
+function readSetting (name)
   local ok, value = pcall (function ()
-    return Settings.get_string (SETTING)
+    return Settings.get_string (name)
   end)
   if not ok or type (value) ~= "string" then
     return nil
   end
-  value = value:gsub ('"', "")
-  if value == "" or value == "auto" then
+  return (value:gsub ('"', ""))
+end
+
+-- What was chosen for this headset alone, or nil.
+function deviceChoice (card)
+  local addr = card and card.properties and card.properties["api.bluez5.address"]
+  local map = readSetting (DEVICE_SETTING)
+  if not addr or not map then
+    return nil
+  end
+  addr = addr:upper ()
+  for a, codec in map:gmatch ("([%x:]+)=([%w_]+)") do
+    if a:upper () == addr then
+      return codec
+    end
+  end
+  return nil
+end
+
+-- The preferred codec for a card, or nil for "leave it to WirePlumber". An
+-- older WirePlumber, a missing schema entry, anything unexpected: all of that
+-- is nil, which is the behaviour without this script.
+function preferredCodec (card)
+  local value = deviceChoice (card)
+  if value == nil then
+    value = readSetting (SETTING)
+  end
+  if value == nil or value == "" or value == "auto" then
     return nil
   end
   return value
@@ -91,7 +119,7 @@ end
 -- or for "auto" plain a2dp-sink, WirePlumber's best. nil when the headset
 -- does not offer the codec - then it stays where it is.
 function wantedProfile (card)
-  local codec = preferredCodec ()
+  local codec = preferredCodec (card)
   for p in card:iterate_params ("EnumProfile") do
     local profile = cutils.parseParam (p, "EnumProfile")
     if profile and profile.available ~= "no" then
@@ -127,7 +155,7 @@ function correct (card, why, even_auto)
   if not isBluez (card) then
     return
   end
-  if preferredCodec () == nil and not even_auto then
+  if preferredCodec (card) == nil and not even_auto then
     return
   end
   local active = activeProfile (card)
@@ -156,7 +184,7 @@ preferred_codec_hook = SimpleEventHook {
   execute = function (event)
     local ok, err = pcall (function ()
       local card = event:get_subject ()
-      if not isBluez (card) or preferredCodec () == nil then
+      if not isBluez (card) or preferredCodec (card) == nil then
         return
       end
       local picked = event:get_data ("selected-profile")
@@ -210,12 +238,14 @@ function applyToAll ()
 end
 
 -- An older WirePlumber without subscribe still gets the other two ways in.
-pcall (function ()
-  Settings.subscribe (SETTING, function ()
-    local ok, err = pcall (applyToAll)
-    if not ok then
-      log:warning ("bluetooth codec: applying the setting failed - " ..
-                   tostring (err))
-    end
+for _, name in ipairs ({ SETTING, DEVICE_SETTING }) do
+  pcall (function ()
+    Settings.subscribe (name, function ()
+      local ok, err = pcall (applyToAll)
+      if not ok then
+        log:warning ("bluetooth codec: applying the setting failed - " ..
+                     tostring (err))
+      end
+    end)
   end)
-end)
+end

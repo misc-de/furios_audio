@@ -1431,6 +1431,12 @@ bt_mic() {
 # No root: the setting lives in WirePlumber's own state for this user.
 BT_CODEC_SETTING=furios.bluetooth-codec
 BT_CODECS="auto sbc sbc_xq aac aptx aptx_hd ldac"
+# Per headset, overriding the one above: "ADDRESS=codec;ADDRESS=codec".
+BT_CODEC_DEVICES_SETTING=furios.bluetooth-codec-devices
+# What each headset offered when it was last connected - a headset only says
+# which codecs it has while it is connected, and the app wants to offer only
+# those. One line per headset: address, codecs, name, tab-separated.
+BT_CODEC_SEEN=${AUDIOCTL_BT_SEEN:-$USERCFG/furios-audio/bt-codecs}
 
 # What is set, "auto" when nothing is, and nothing at all when WirePlumber
 # does not know the setting - an older install, or no WirePlumber running.
@@ -1438,6 +1444,48 @@ bt_codec_preference() {
     local out
     out=$(wpctl settings "$BT_CODEC_SETTING" 2>/dev/null) || return 1
     printf '%s\n' "$out" | sed -n 's/^Value: "\{0,1\}\([A-Za-z0-9_]*\)"\{0,1\}.*/\1/p' | head -1
+}
+
+# The per-headset list as stored, "" when empty; fails when WirePlumber does
+# not know the setting.
+bt_codec_device_map() {
+    local out
+    out=$(wpctl settings "$BT_CODEC_DEVICES_SETTING" 2>/dev/null) || return 1
+    printf '%s\n' "$out" | grep -q '^Value:' || return 1
+    printf '%s\n' "$out" | sed -n 's/^Value: "\{0,1\}\([^" ]*\)"\{0,1\}.*/\1/p' | head -1
+}
+
+# The codec chosen for one headset, nothing when it follows the setting for all.
+bt_codec_device_choice() {
+    local addr=$1 map
+    map=$(bt_codec_device_map) || return 0
+    printf '%s\n' "$map" | tr ';' '\n' \
+        | awk -F= -v a="$addr" 'toupper($1) == toupper(a) { print $2; exit }'
+}
+
+# bluez_card.F4_9D_8A_00_00_01 -> F4:9D:8A:00:00:01
+bt_card_address() {
+    printf '%s\n' "${1#bluez_card.}" | tr '_' ':' | tr '[:lower:]' '[:upper:]'
+}
+
+# The headset's own name, from the card - text from outside, so one line of
+# printable characters without the separator used below.
+bt_card_name() {
+    local card=$1
+    pactl list cards 2>/dev/null | sed -n "/Name: $card\$/,/^\$/p" \
+        | sed -n 's/.*device\.description = "\(.*\)"$/\1/p' | head -1 \
+        | tr -cd '[:print:]' | tr -d '|' | cut -c1-40
+}
+
+# Remember what a connected headset offers, replacing its old line.
+bt_codec_remember() {
+    local addr=$1 offered=$2 name=$3 rest
+    [ -n "$addr" ] && [ -n "$offered" ] || return 0
+    mkdir -p "$(dirname "$BT_CODEC_SEEN")" 2>/dev/null || return 0
+    rest=$(grep -v "^$addr	" "$BT_CODEC_SEEN" 2>/dev/null)
+    { [ -n "$rest" ] && printf '%s\n' "$rest"
+      printf '%s\t%s\t%s\n' "$addr" "$offered" "$name"; } > "$BT_CODEC_SEEN.tmp" \
+        && mv "$BT_CODEC_SEEN.tmp" "$BT_CODEC_SEEN"
 }
 
 # One line per A2DP profile of the card: "<profile> <codec> <available>".
@@ -1460,21 +1508,65 @@ bt_codec_profiles() {
 }
 
 bt_codec_status() {
-    local pref card active prof codec avail offered=""
+    local pref card active prof codec avail offered="" addr="" choice a c n
     pref=$(bt_codec_preference) || pref=""
     printf 'preference=%s\n' "${pref:-unsupported}"
+    # Whether this WirePlumber knows the per-headset setting at all - an
+    # older furios_audio does not, and then the app offers no headset rows.
+    bt_codec_device_map >/dev/null && printf 'per_device=yes\n' || printf 'per_device=no\n'
     card=$(pactl list short cards 2>/dev/null | awk '/bluez_card/ {print $2; exit}')
-    [ -n "$card" ] || return 0
-    printf 'card=%s\n' "$card"
-    active=$(bt_active_profile "$card" 2>/dev/null)
-    while read -r prof codec avail; do
-        [ -n "$prof" ] || continue
-        [ "$avail" = yes ] && offered="$offered $codec"
-        [ "$prof" = "$active" ] && printf 'active=%s\n' "$codec"
-    done <<EOF
+    if [ -n "$card" ]; then
+        printf 'card=%s\n' "$card"
+        addr=$(bt_card_address "$card")
+        printf 'device=%s\n' "$addr"
+        active=$(bt_active_profile "$card" 2>/dev/null)
+        while read -r prof codec avail; do
+            [ -n "$prof" ] || continue
+            [ "$avail" = yes ] && offered="$offered $codec"
+            [ "$prof" = "$active" ] && printf 'active=%s\n' "$codec"
+        done <<EOF
 $(bt_codec_profiles "$card")
 EOF
-    printf 'offered=%s\n' "${offered# }"
+        offered=${offered# }
+        printf 'offered=%s\n' "$offered"
+        bt_codec_remember "$addr" "$offered" "$(bt_card_name "$card")"
+    fi
+    # Every headset seen so far: address|name|its own choice or "default"|
+    # the codecs it offered, comma-separated.
+    [ -r "$BT_CODEC_SEEN" ] || return 0
+    while IFS='	' read -r a c n; do
+        [ -n "$a" ] || continue
+        choice=$(bt_codec_device_choice "$a")
+        printf 'known=%s|%s|%s|%s\n' "$a" "${n:-$a}" "${choice:-default}" \
+            "$(printf '%s' "$c" | tr ' ' ',')"
+    done < "$BT_CODEC_SEEN"
+}
+
+# Set or clear one headset's own codec. "default" takes the headset out of the
+# list, so it follows the setting for all again.
+bt_codec_device() {
+    local want=$1 addr=$2 map new got
+    printf '%s\n' "$addr" | grep -qE '^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$' \
+        || die "--device needs a Bluetooth address like F4:9D:8A:00:00:01"
+    addr=$(printf '%s' "$addr" | tr '[:lower:]' '[:upper:]')
+    case " $BT_CODECS default " in
+    *" $want "*) ;;
+    *) die "bt-codec --device needs one of: default $BT_CODECS" ;;
+    esac
+    map=$(bt_codec_device_map) \
+        || die "WirePlumber does not know $BT_CODEC_DEVICES_SETTING - is furios_audio's 51-bluez-ofono.conf installed and WirePlumber restarted since?"
+    new=$(printf '%s\n' "$map" | tr ';' '\n' \
+        | awk -F= -v a="$addr" 'NF == 2 && toupper($1) != a' | paste -sd';' -)
+    [ "$want" = default ] || new="${new:+$new;}$addr=$want"
+    if [ "$DRY" = 1 ]; then
+        echo "[dry-run] wpctl settings --save $BT_CODEC_DEVICES_SETTING ${new:-\"\"}"
+        return 0
+    fi
+    wpctl settings --save "$BT_CODEC_DEVICES_SETTING" "${new:-\"\"}" >/dev/null 2>&1
+    got=$(bt_codec_device_choice "$addr")
+    [ "${got:-default}" = "$want" ] \
+        || die "WirePlumber did not take the setting for $addr (it says: ${got:-nothing})"
+    info "Bluetooth codec for $addr: $want"
 }
 
 bt_codec() {
@@ -1482,6 +1574,10 @@ bt_codec() {
     case "$want" in
     status) bt_codec_status; return 0 ;;
     esac
+    if [ "${2:-}" = --device ]; then
+        bt_codec_device "$want" "${3:-}"
+        return
+    fi
     case " $BT_CODECS " in
     *" $want "*) ;;
     *) die "bt-codec needs one of: status $BT_CODECS" ;;
@@ -1526,6 +1622,9 @@ audioctl - switch the audio stack
                                chosen, what the connected headset offers
   audioctl bt-codec <codec>    auto (WirePlumber's best), sbc, sbc_xq, aac,
                                aptx, aptx_hd or ldac - applies at once
+  audioctl bt-codec <codec> --device <address>
+                               the same for one headset only; "default" makes
+                               it follow the setting for all again
   audioctl revert              back to standard immediately
   audioctl boot                write the stored profile's configuration
                                without starting anything (used at boot)
@@ -1640,7 +1739,7 @@ case "${1:-status}" in
     rescue) rescue ;;
     bt-call) [ $# -ge 2 ] || die "bt-call needs 'on', 'off' or 'watch'."; bt_call "$2" ;;
     bt-mic) [ $# -ge 2 ] || die "bt-mic needs 'on', 'off', 'test' or 'status'."; bt_mic "$2" "${3:-}" ;;
-    bt-codec) bt_codec "${2:-status}" ;;
+    bt-codec) bt_codec "${2:-status}" "${3:-}" "${4:-}" ;;
     revert) switch_to standard sticky ;;
     migrate) migrate_legacy ;;
     verify) verify && echo "OK - sink present." || { echo "no sink." >&2; exit 1; } ;;
