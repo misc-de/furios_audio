@@ -59,6 +59,16 @@ else
 fi
 
 echo "   compiling"
+# meson writes absolute paths into the build directory. A clone that was
+# moved or renamed (furios_pipewire became furios_audio) keeps a build
+# directory pointing at a source tree that no longer exists, and ninja fails
+# with "Neither source directory ... nor build directory contain meson.build".
+# It is generated and git-ignored, so it is set up again from scratch.
+if [ -d "$BUILD" ] && ! grep -qF "\"source\": \"$(pwd -P)/poc/spa-droid\"" \
+        "$BUILD/meson-info/meson-info.json" 2>/dev/null; then
+    echo "      build directory belongs to another path - setting it up again"
+    rm -rf "$BUILD"
+fi
 [ -d "$BUILD" ] || meson setup "$BUILD" poc/spa-droid
 ninja -C "$BUILD"
 [ -f "$PLUGIN" ] || { echo "the build produced no $PLUGIN" >&2; exit 1; }
