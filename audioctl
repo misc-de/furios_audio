@@ -858,13 +858,89 @@ ensure_safety_net() {
 # only has to stop or start what is running now.
 PW_ONLY_HELPERS="furios-audio-pause-on-disconnect.service furios-audio-sco-hold.service furios-audio-bt-mic.service furios-audio-bt-reconnect.service"
 
+# The Bluetooth helpers that talk to BlueZ alone and so can run under
+# PulseAudio too - pausing when a headset goes, dialling it back when it hung
+# up. Everything else here is WirePlumber (the call on the headset, the SCO
+# hold, the headset microphone, the codec) and exists under pw-hal only.
+# Under pw-hal every helper runs, always: that is the stack as it was worked
+# out. Under the other profiles these two are an option, off unless chosen,
+# because they have not been lived with there yet.
+PA_CAPABLE_HELPERS="furios-audio-pause-on-disconnect.service furios-audio-bt-reconnect.service"
+BT_EXTRAS=$STATE_DIR/bt-extras
+
+bt_extras_on() {
+    [ "$(cat "$BT_EXTRAS" 2>/dev/null)" = on ]
+}
+
+# May this helper run now? What the units' ExecCondition asks.
+helper_allowed() {
+    local unit=$1
+    [ "$(current_profile 2>/dev/null)" = pw-hal ] && return 0
+    case " $PA_CAPABLE_HELPERS " in
+        *" $unit "*) bt_extras_on ;;
+        *) return 1 ;;
+    esac
+}
+
 pw_helpers() {
     local verb=$1 u
     for u in $PW_ONLY_HELPERS; do
         uctl is-enabled "$u" >/dev/null 2>&1 || continue
+        # Leaving pw-hal stops the helpers - except the ones chosen to go on
+        # running under PulseAudio.
+        if [ "$verb" = stop ] && bt_extras_on; then
+            case " $PA_CAPABLE_HELPERS " in *" $u "*) continue ;; esac
+        fi
         run uctl "$verb" "$u" >/dev/null 2>&1 || true
     done
     return 0
+}
+
+# audioctl bt-extras [status|on|off]
+bt_extras() {
+    local want=${1:-status} p u
+    p=$(current_profile 2>/dev/null)
+    case "$want" in
+    status)
+        printf 'bt-extras=%s\n' "$(bt_extras_on && echo on || echo off)"
+        printf 'profile=%s\n' "${p:-unknown}"
+        # What actually runs: everything under pw-hal, the two BlueZ-only
+        # helpers under the others when chosen, nothing otherwise.
+        if [ "$p" = pw-hal ]; then echo 'effective=all'
+        elif bt_extras_on; then echo 'effective=basic'
+        else echo 'effective=none'; fi
+        return 0 ;;
+    on|off) ;;
+    *) die "bt-extras needs on, off or status" ;;
+    esac
+    if [ "$DRY" = 1 ]; then
+        echo "[dry-run] bt-extras $want"
+        return 0
+    fi
+    if [ "$want" = on ]; then
+        write_state "$BT_EXTRAS" on || die "cannot write $BT_EXTRAS"
+    else
+        rm -f "$BT_EXTRAS" || die "cannot remove $BT_EXTRAS"
+    fi
+    # Under pw-hal nothing changes: there every helper runs anyway.
+    if [ "$p" = pw-hal ]; then
+        info "PipeWire owns the HAL - the Bluetooth helpers run there regardless"
+        return 0
+    fi
+    ensure_pause_on_disconnect
+    ensure_bt_reconnect
+    for u in $PA_CAPABLE_HELPERS; do
+        if [ "$want" = on ]; then
+            run uctl start "$u" >/dev/null 2>&1 || true
+        else
+            run uctl stop "$u" >/dev/null 2>&1 || true
+        fi
+    done
+    if [ "$want" = on ]; then
+        info "Bluetooth helpers on under $p: pause on disconnect, reconnect (not tested there yet)"
+    else
+        info "Bluetooth helpers off under $p"
+    fi
 }
 
 switch_to() {
@@ -1658,6 +1734,10 @@ audioctl - switch the audio stack
                                chosen, what the connected headset offers
   audioctl bt-codec <codec>    auto (WirePlumber's best), sbc, sbc_xq, aac,
                                aptx, aptx_hd or ldac - applies at once
+  audioctl bt-extras [status|on|off]
+                               Bluetooth helpers outside pw-hal: pause on
+                               disconnect and reconnect, the two that need no
+                               WirePlumber (under pw-hal all of them run)
   audioctl bt-codec <codec> --device <address>
                                the same for one headset only; "default" makes
                                it follow the setting for all again
@@ -1760,6 +1840,8 @@ case "${1:-status}" in
             fi ;;
     list)   printf '%s\n' $PROFILES ;;
     # For ExecCondition: exit 0 when the stored profile is the one named.
+    helper-allowed) [ $# -ge 2 ] || die "unit missing."; helper_allowed "$2" ;;
+    bt-extras) bt_extras "${2:-status}" ;;
     is)     [ $# -ge 2 ] || die "profile missing."
             [ "$(current_profile 2>/dev/null)" = "$2" ] ;;
     try)    [ $# -ge 2 ] || die "profile missing."; switch_to "$2" try ;;

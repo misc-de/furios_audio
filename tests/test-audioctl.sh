@@ -1644,10 +1644,52 @@ for u in pause-on-disconnect sco-hold bt-mic bt-reconnect; do
 done
 check "and disables none of them - the condition keeps them quiet" "" \
     "$(grep -E -- '--user disable furios-audio-(sco|bt|pause)' "$STUBDIR/systemctl.log")"
-for u in furios-audio-pause-on-disconnect furios-audio-sco-hold furios-audio-bt-mic furios-audio-bt-reconnect; do
+for u in furios-audio-sco-hold furios-audio-bt-mic; do
     check "$u.service only runs under pw-hal" "yes" \
         "$(grep -q '^ExecCondition=.* is pw-hal' "$HERE/../$u.service" && echo yes || echo no)"
 done
+for u in furios-audio-pause-on-disconnect furios-audio-bt-reconnect; do
+    check "$u.service asks whether it may run" "yes" \
+        "$(grep -q "^ExecCondition=.* helper-allowed $u.service" "$HERE/../$u.service" && echo yes || echo no)"
+done
+
+# --- the two BlueZ-only helpers as an option outside pw-hal ------------------
+run_ctl() {
+    AUDIOCTL_STATE_DIR="$STUBDIR/state" bash "$HERE/../audioctl" "$@" 2>/dev/null
+}
+: > "$STUBDIR/systemctl.log"
+echo standard > "$STUBDIR/state/profile"; rm -f "$STUBDIR/state/bt-extras"
+check "off by default under PulseAudio" "bt-extras=off" "$(run_ctl bt-extras | head -1)"
+check "and nothing runs" "effective=none" "$(run_ctl bt-extras | grep effective)"
+check_status "pause-on-disconnect may not run" 1 run_ctl helper-allowed furios-audio-pause-on-disconnect.service
+run_ctl bt-extras on >/dev/null
+check "on writes the choice" "on" "$(cat "$STUBDIR/state/bt-extras")"
+check "and says what runs" "effective=basic" "$(run_ctl bt-extras | grep effective)"
+check_status "pause-on-disconnect may run now" 0 run_ctl helper-allowed furios-audio-pause-on-disconnect.service
+check_status "reconnect too" 0 run_ctl helper-allowed furios-audio-bt-reconnect.service
+check_status "but not the SCO hold - that is WirePlumber" 1 run_ctl helper-allowed furios-audio-sco-hold.service
+check "on starts both at once" "yes" \
+    "$(grep -qx -- '--user start furios-audio-bt-reconnect.service' "$STUBDIR/systemctl.log" && echo yes || echo no)"
+: > "$STUBDIR/systemctl.log"
+( AUDIOCTL_LIB=1 AUDIOCTL_STATE_DIR="$STUBDIR/state" AUDIOCTL_ETCU="$STUBDIR/etc" \
+    . "$HERE/../audioctl"; apply standard ) >/dev/null 2>&1
+check "a switch to PulseAudio leaves the chosen ones running" "" \
+    "$(grep -E -- '--user stop furios-audio-(pause-on-disconnect|bt-reconnect)' "$STUBDIR/systemctl.log")"
+check "and still stops the WirePlumber ones" "yes" \
+    "$(grep -qx -- '--user stop furios-audio-sco-hold.service' "$STUBDIR/systemctl.log" && echo yes || echo no)"
+: > "$STUBDIR/systemctl.log"
+run_ctl bt-extras off >/dev/null
+check "off stops them" "yes" \
+    "$(grep -qx -- '--user stop furios-audio-pause-on-disconnect.service' "$STUBDIR/systemctl.log" && echo yes || echo no)"
+check "and forgets the choice" "no" "$([ -e "$STUBDIR/state/bt-extras" ] && echo yes || echo no)"
+echo pw-hal > "$STUBDIR/state/profile"
+check "under pw-hal everything runs, chosen or not" "effective=all" "$(run_ctl bt-extras | grep effective)"
+check_status "the SCO hold included" 0 run_ctl helper-allowed furios-audio-sco-hold.service
+: > "$STUBDIR/systemctl.log"
+run_ctl bt-extras off >/dev/null
+check "and the switch touches nothing there" "" \
+    "$(grep -E -- '--user (start|stop) ' "$STUBDIR/systemctl.log")"
+check_status "an unknown word is refused" 1 run_ctl bt-extras maybe
 rm -f "$STUBDIR/systemctl"
 
 summary
