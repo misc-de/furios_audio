@@ -2770,12 +2770,31 @@ class BluetoothReconnect(unittest.TestCase):
         self.assertEqual(system.profiles,
                          [(self.DEV, reconnect.A2DP_SINK_UUID)])
         self.assertIn("connecting A2DP", out)
-        callback, name = system.pending.pop(0)
+        callback, dev = system.pending.pop(0)
         system.result = True
         out = io.StringIO()
         with redirect_stdout(out):
-            callback(system, "token", name)
-        self.assertIn("A2DP back", out.getvalue())
+            callback(system, "token", dev)
+        self.assertNotIn("A2DP back", out.getvalue(),
+                         "BlueZ saying yes is not music yet")
+        system.objects[self.DEV + "/sep1/fd1"] = {
+            "org.bluez.MediaTransport1": {}}
+        self.assertIn("A2DP back", self.check(rc))
+
+    def test_a_profile_accepted_without_music_is_said(self):
+        """2026-09-28 21:55: "A2DP back", and the sound came from the
+        phone's speaker - BlueZ had said yes, and no transport ever came."""
+        system = ReconnectBus()
+        rc = self.build(system)
+        self.music_gone(rc)
+        self.check(rc)
+        callback, dev = system.pending.pop(0)
+        system.result = True
+        with redirect_stdout(io.StringIO()):
+            callback(system, "token", dev)
+        out = self.check(rc)
+        self.assertNotIn("A2DP back", out)
+        self.assertIn("no music transport", out)
 
     def test_music_that_came_back_by_itself_is_left(self):
         system = ReconnectBus(objects={

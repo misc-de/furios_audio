@@ -459,18 +459,32 @@ class Reconnector:
             "org.bluez", dev, "org.bluez.Device1", "ConnectProfile",
             GLib.Variant("(s)", (A2DP_SINK_UUID,)), None,
             Gio.DBusCallFlags.NONE, CONNECT_TIMEOUT_MS, None,
-            self.on_music_done, name,
+            self.on_music_done, dev,
         )
         return False
 
-    def on_music_done(self, conn, result, name):
+    def on_music_done(self, conn, result, dev):
+        name = dev.rsplit("/", 1)[-1]
         try:
             conn.call_finish(result)
         except GLib.Error as err:
             print("could not connect A2DP on %s: %s" % (name, err.message),
                   flush=True)
             return
-        print("A2DP back on %s" % name, flush=True)
+        # BlueZ accepting the profile is not music yet: on 2026-09-28 this
+        # said "A2DP back" and the sound still came from the phone's speaker.
+        # Only a media transport is something PipeWire can play to.
+        GLib.timeout_add_seconds(A2DP_CHECK_S,
+                                 lambda: self.confirm_music(dev))
+
+    def confirm_music(self, dev):
+        name = dev.rsplit("/", 1)[-1]
+        if has_music_transport(self.system, dev):
+            print("A2DP back on %s" % name, flush=True)
+        else:
+            print("A2DP connected on %s, but no music transport after %d s"
+                  % (name, A2DP_CHECK_S), flush=True)
+        return False
 
     def on_session_props(self, _conn, _sender, _path, _iface, _signal,
                          params):

@@ -13,13 +13,25 @@
 -- A preference has to hold in three places, and each is its own way in:
 --
 --   connecting    WirePlumber selects a profile (select-profile). The hook
---                 below swaps an A2DP choice for the preferred codec before it
---                 is applied, so the headset negotiates once, not twice.
+--                 below leaves that pick alone and asks for the preferred
+--                 codec only once the headset has been quiet for SETTLE_MS.
 --   switching     after a call droid-bluetooth-call.lua, and audioctl after
 --                 bt-mic, put the card on plain a2dp-sink - the best codec
---                 again. Any profile change is looked at and corrected.
+--                 again. Any profile change is looked at and corrected, after
+--                 the same wait.
 --   the setting   changed with "audioctl bt-codec", it applies to a headset
 --                 that is connected right now, without a reconnect.
+--
+-- Why wait: swapping the pick inside select-profile made PipeWire reconfigure
+-- a stream the headset was still setting up itself. Measured 2026-09-28 21:55
+-- with a Soundcore Liberty 4 Pro and sbc_xq: "SET_CONFIGURATION request
+-- rejected: Stream End Point in Use", BlueZ dropped A2DP, the headset had no
+-- music output and everything played from the phone's speaker.
+--
+-- And every request is checked CHECK_MS later. A headset still on another
+-- codec refused: it is not asked again until the setting changes, and one
+-- left without any A2DP profile is put back on plain a2dp-sink, its own best
+-- - music on another codec is fine, no music is not.
 --
 -- Only ever from one A2DP profile to another. A headset on hands-free is in a
 -- call or recording, and that is not this script's to touch. Never stored
@@ -38,8 +50,20 @@ DEVICE_SETTING = "furios.bluetooth-codec-devices"
 
 -- What was last asked of each card, so a headset that refuses a codec (the
 -- profile comes straight back) is not asked again and again. Cleared when the
--- setting changes or the headset connects afresh.
+-- setting changes.
 tried = {}
+
+-- Headsets that refused a codec, by address: the codec they refused. Kept
+-- across reconnects - a refusal is the headset's, not the connection's - and
+-- cleared when the setting changes.
+refused = {}
+
+-- A pending correction per card, so a burst of profile changes while a
+-- headset connects ends in one request, SETTLE_MS after the last of them.
+pending = {}
+
+SETTLE_MS = 8000
+CHECK_MS = 6000
 
 -- The codec an A2DP profile carries, or nil for anything else.
 --
@@ -133,6 +157,48 @@ function wantedProfile (card)
   return nil
 end
 
+function addressOf (card)
+  local addr = card and card.properties and card.properties["api.bluez5.address"]
+  return addr and addr:upper () or nil
+end
+
+-- Did the headset take what was asked? Its active profile tells. On anything
+-- else the refusal is remembered, and a headset left with no A2DP profile at
+-- all gets its own best back.
+function checkOutcome (card, want, codec)
+  local active = activeProfile (card)
+  if active ~= nil and active.index == want.index then
+    log:info ("bluetooth codec: the headset plays " .. codec)
+    return
+  end
+  local addr = addressOf (card)
+  if addr then
+    refused[addr] = codec
+  end
+  local now = active and active.name or "no profile"
+  log:warning ("bluetooth codec: the headset did not take " .. codec ..
+               " (now " .. now .. ") - not asking again")
+  if active ~= nil and codecOf (active) ~= nil then
+    return
+  end
+  if active ~= nil and active.name ~= "off" then
+    return    -- hands-free: a call or a recording, not ours
+  end
+  for p in card:iterate_params ("EnumProfile") do
+    local profile = cutils.parseParam (p, "EnumProfile")
+    if profile and profile.name == "a2dp-sink" and profile.available ~= "no" then
+      log:warning ("bluetooth codec: putting the headset back on its own " ..
+                   "best, " .. tostring (codecOf (profile)))
+      card:set_params ("Profile", Pod.Object {
+        "Spa:Pod:Object:Param:Profile", "Profile",
+        index = profile.index,
+        save = false,
+      })
+      return
+    end
+  end
+end
+
 function setProfile (card, profile, why)
   local id = card["bound-id"] or 0
   if tried[id] == profile.index then
@@ -146,6 +212,14 @@ function setProfile (card, profile, why)
     index = profile.index,
     save = false,
   })
+  local codec = codecOf (profile) or profile.name
+  Core.timeout_add (CHECK_MS, function ()
+    local ok, err = pcall (checkOutcome, card, profile, codec)
+    if not ok then
+      log:warning ("bluetooth codec: checking failed - " .. tostring (err))
+    end
+    return false
+  end)
 end
 
 -- A card that plays music goes onto the wanted profile. "auto" only acts when
@@ -155,7 +229,11 @@ function correct (card, why, even_auto)
   if not isBluez (card) then
     return
   end
-  if preferredCodec (card) == nil and not even_auto then
+  local codec = preferredCodec (card)
+  if codec == nil and not even_auto then
+    return
+  end
+  if codec ~= nil and refused[addressOf (card) or ""] == codec then
     return
   end
   local active = activeProfile (card)
@@ -167,6 +245,25 @@ function correct (card, why, even_auto)
     return
   end
   setProfile (card, want, why)
+end
+
+-- Correct this card once it has been quiet for SETTLE_MS. Each call starts
+-- the wait again, so only the last of a burst acts.
+function later (card, why)
+  local id = card["bound-id"] or 0
+  local mine = (pending[id] or 0) + 1
+  pending[id] = mine
+  Core.timeout_add (SETTLE_MS, function ()
+    if pending[id] ~= mine then
+      return false
+    end
+    pending[id] = nil
+    local ok, err = pcall (correct, card, why)
+    if not ok then
+      log:warning ("bluetooth codec: correcting failed - " .. tostring (err))
+    end
+    return false
+  end)
 end
 
 preferred_codec_hook = SimpleEventHook {
@@ -181,27 +278,20 @@ preferred_codec_hook = SimpleEventHook {
       Constraint { "event.type", "=", "select-profile" },
     },
   },
+  -- WirePlumber's pick stands; the preferred codec follows once the headset
+  -- is quiet (see the top of this file).
   execute = function (event)
     local ok, err = pcall (function ()
       local card = event:get_subject ()
       if not isBluez (card) or preferredCodec (card) == nil then
         return
       end
-      local picked = event:get_data ("selected-profile")
-      if codecOf (picked) == nil then
+      if codecOf (event:get_data ("selected-profile")) == nil then
         return
       end
-      local want = wantedProfile (card)
-      if want ~= nil and want.index ~= picked.index then
-        tried[card["bound-id"] or 0] = nil
-        log:info ("bluetooth codec: " .. want.name .. " instead of " ..
-                  tostring (picked.name))
-        event:set_data ("selected-profile", want)
-      end
+      later (card, "connected")
     end)
     if not ok then
-      -- WirePlumber's own choice stands: music on another codec is fine,
-      -- no profile at all is not.
       log:warning ("bluetooth codec: choosing failed - " .. tostring (err))
     end
   end,
@@ -219,7 +309,10 @@ profile_changed_hook = SimpleEventHook {
   },
   execute = function (event)
     local ok, err = pcall (function ()
-      correct (event:get_subject (), "profile changed")
+      local card = event:get_subject ()
+      if isBluez (card) then
+        later (card, "profile changed")
+      end
     end)
     if not ok then
       log:warning ("bluetooth codec: correcting failed - " .. tostring (err))
@@ -231,6 +324,7 @@ profile_changed_hook:register ()
 
 function applyToAll ()
   tried = {}
+  refused = {}
   local om = cutils.get_object_manager ("device")
   for card in om:iterate { Constraint { "device.api", "=", "bluez5" } } do
     correct (card, "setting changed", true)

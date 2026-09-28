@@ -75,63 +75,150 @@ T.check("hands-free is no A2DP codec", codecOf(HFP) == nil)
 
 -- --- connecting --------------------------------------------------------------
 
+-- Run whatever the script is waiting for, and what that schedules in turn.
+local function wait()
+  T.traced(function ()
+    while wp.fire_timers() > 0 do end
+  end)
+end
+
+local function asked()
+  return table.concat(profiles_set(), ",")
+end
+
 setup("sbc")
 local card = wp.add("device", bt_card())
-T.check_equal("connecting picks the preferred codec", "a2dp-sink-sbc",
+T.check_equal("connecting leaves WirePlumber's pick", "a2dp-sink",
               select_profile(card, AAC).name)
+T.check_equal("nothing is asked while the headset connects", "", asked())
+T.check_equal("it waits SETTLE_MS", SETTLE_MS, wp.calls_of("timeout_add")[1].args[1])
+wait()
+T.check_equal("once quiet, the preferred codec is asked for", "2", asked())
+
+setup("sbc")
+card = wp.add("device", bt_card())
+select_profile(card, AAC)
+profile_changed(card)
+profile_changed(card)
+wait()
+T.check_equal("a burst of changes while connecting asks once", "2", asked())
+
+setup("sbc")
+card = wp.add("device", bt_card(HFP))
 T.check_equal("a hands-free pick is left alone", "headset-head-unit",
               select_profile(card, HFP).name)
+wait()
+T.check_equal("and nothing is asked later", "", asked())
 
 setup("auto")
 card = wp.add("device", bt_card())
-T.check_equal("auto leaves WirePlumber's pick", "a2dp-sink",
-              select_profile(card, AAC).name)
+select_profile(card, AAC)
+wait()
+T.check_equal("auto asks for nothing", "", asked())
 
 setup(nil)
 card = wp.add("device", bt_card())
-T.check_equal("no setting at all is auto", "a2dp-sink",
-              select_profile(card, AAC).name)
+select_profile(card, AAC)
+wait()
+T.check_equal("no setting at all is auto", "", asked())
 
 setup("ldac")
 card = wp.add("device", bt_card())
-T.check_equal("a codec the headset lacks leaves the pick", "a2dp-sink",
-              select_profile(card, AAC).name)
+select_profile(card, AAC)
+wait()
+T.check_equal("a codec the headset lacks is not asked for", "", asked())
 
 setup("sbc")
 card = wp.add("device", bt_card())
 card.iterate_params = function () error("the card went away") end
 T.check_equal("an error leaves WirePlumber's pick", "a2dp-sink",
               select_profile(card, AAC).name)
+wait()
+T.check_equal("and a card gone by then is left alone", "", asked())
+
+-- --- the headset says no -------------------------------------------------------
+
+-- 2026-09-28 21:55: the Liberty 4 Pro rejected SBC-XQ ("Stream End Point in
+-- Use"), BlueZ dropped A2DP and the card was left without music.
+setup("sbc_xq")
+card = wp.add("device", bt_card())
+select_profile(card, AAC)
+T.traced(function () wp.fire_timers() end)        -- the wait: asks
+card.params.Profile = { { name = "off", index = 0, description = "Off" } }
+T.traced(function () wp.fire_timers() end)        -- the check
+T.check_equal("a headset left without music gets its own best back", "3,1",
+              asked())
+
+setup("sbc_xq")
+card = wp.add("device", bt_card())
+select_profile(card, AAC)
+wait()                                            -- stays on AAC: refused
+T.check_equal("refused but still playing: left on its codec", "3", asked())
+wp.objects.device = {}                            -- it disconnects
+local again = wp.add("device", wp.object({ ["device.api"] = "bluez5", ["bound-id"] = 8,
+  ["api.bluez5.address"] = "f4:9d:8a:00:00:01" }, { params = {
+  EnumProfile = { AAC, SBC, SBC_XQ, HFP }, Profile = { AAC } } }))
+select_profile(again, AAC)
+wait()
+T.check_equal("reconnected, the refusing headset is not asked again", "3", asked())
+wp.settings["furios.bluetooth-codec"] = "sbc"
+T.traced(function () wp.subscribers["furios.bluetooth-codec"]() end)
+T.check_equal("a changed setting may ask it again", "3,2", asked())
+
+setup("sbc_xq")
+card = wp.add("device", bt_card())
+select_profile(card, AAC)
+T.traced(function () wp.fire_timers() end)
+card.params.Profile = { SBC_XQ }                  -- took it
+wait()
+T.check_equal("a headset that took the codec is left there", "3", asked())
+select_profile(card, SBC_XQ)
+wait()
+T.check_equal("and not asked again", "3", asked())
+
+setup("sbc_xq")
+card = wp.add("device", bt_card())
+select_profile(card, AAC)
+T.traced(function () wp.fire_timers() end)
+card.params.Profile = { HFP }                     -- a call came in meanwhile
+wait()
+T.check_equal("hands-free by the time of the check is not touched", "3", asked())
 
 -- --- switching back after a call ---------------------------------------------
 
 setup("sbc_xq")
 card = wp.add("device", bt_card(AAC))
 profile_changed(card)
+wait()
 T.check_equal("back on plain a2dp-sink after a call, it is corrected",
               "3", table.concat(profiles_set(), ","))
 
 setup("sbc_xq")
 card = wp.add("device", bt_card(SBC_XQ))
 profile_changed(card)
+wait()
 T.check_equal("already on it: nothing", "", table.concat(profiles_set(), ","))
 
 setup("sbc")
 card = wp.add("device", bt_card(HFP))
 profile_changed(card)
+wait()
 T.check_equal("in hands-free (a call, a recording): nothing", "",
               table.concat(profiles_set(), ","))
 
 setup("sbc")
 card = wp.add("device", bt_card(AAC))
 profile_changed(card)
+T.traced(function () wp.fire_timers() end)
 profile_changed(card)   -- the headset refused and came back to AAC
+wait()
 T.check_equal("a codec the headset refuses is asked for once", "2",
               table.concat(profiles_set(), ","))
 
 setup("auto")
 card = wp.add("device", bt_card(SBC))
 profile_changed(card)
+wait()
 T.check_equal("auto does not undo a profile chosen by hand", "",
               table.concat(profiles_set(), ","))
 
@@ -139,6 +226,7 @@ setup("sbc")
 card = wp.add("device", wp.object({ ["device.api"] = "droid-hal" },
                                   { params = { Profile = { AAC } } }))
 profile_changed(card)
+wait()
 T.check_equal("the phone's own card is not touched", "",
               table.concat(profiles_set(), ","))
 
@@ -161,6 +249,7 @@ T.check_equal("back to auto puts it on WirePlumber's best", "1",
 setup("sbc")
 card = wp.add("device", bt_card(AAC))
 profile_changed(card)
+T.traced(function () wp.fire_timers() end)
 card.params.Profile = { AAC }            -- refused
 wp.settings["furios.bluetooth-codec"] = "sbc_xq"
 T.traced(function () wp.subscribers["furios.bluetooth-codec"]() end)
@@ -174,23 +263,28 @@ T.check_equal("a changed setting may ask again", "2,3,2",
 setup("auto")
 wp.settings["furios.bluetooth-codec-devices"] = "98:52:3D:00:00:02=aac;f4:9d:8a:00:00:01=sbc_xq"
 card = wp.add("device", bt_card())
+select_profile(card, AAC)
+wait()
 T.check_equal("a headset's own choice wins over auto, address in any case",
-              "a2dp-sink-sbc_xq", select_profile(card, AAC).name)
+              "3", asked())
 card = wp.add("device", bt_card(nil, "11:22:33:44:55:66"))
-T.check_equal("a headset without one follows the setting for all",
-              "a2dp-sink", select_profile(card, AAC).name)
+select_profile(card, AAC)
+wait()
+T.check_equal("a headset without one follows the setting for all", "3", asked())
 
 setup("sbc")
 wp.settings["furios.bluetooth-codec-devices"] = "F4:9D:8A:00:00:01=auto"
 card = wp.add("device", bt_card())
-T.check_equal("auto for one headset means WirePlumber's best for it",
-              "a2dp-sink", select_profile(card, AAC).name)
+select_profile(card, AAC)
+wait()
+T.check_equal("auto for one headset means WirePlumber's best for it", "", asked())
 
 setup("sbc")
 wp.settings["furios.bluetooth-codec-devices"] = "not a list at all"
 card = wp.add("device", bt_card())
-T.check_equal("an unreadable list falls back to the setting for all",
-              "a2dp-sink-sbc", select_profile(card, AAC).name)
+select_profile(card, AAC)
+wait()
+T.check_equal("an unreadable list falls back to the setting for all", "2", asked())
 
 setup("auto")
 card = wp.add("device", bt_card(AAC))
