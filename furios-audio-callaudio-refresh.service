@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: MIT
 [Unit]
 Description=Give callaudiod a fresh view of the audio card
-Documentation=https://github.com/misc-de/furios_pipewire
+Documentation=https://github.com/misc-de/furios_audio
 After=wireplumber.service
 PartOf=wireplumber.service
 

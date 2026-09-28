@@ -130,8 +130,8 @@ install -Dm644 LICENSE "$STAGE/usr/share/doc/$PKG/LICENSE"
 install -Dm644 NOTICE  "$STAGE/usr/share/doc/$PKG/NOTICE"
 cat > "$STAGE/usr/share/doc/$PKG/copyright" <<'COPY'
 Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
-Upstream-Name: furios_pipewire
-Source: https://github.com/misc-de/furios_pipewire
+Upstream-Name: furios_audio
+Source: https://github.com/misc-de/furios_audio
 
 Files: *
 Copyright: 2026 misc-de

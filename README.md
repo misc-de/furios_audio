@@ -1,4 +1,4 @@
-# furios_pipewire
+# furios_audio
 
 Lets PipeWire drive the audio hardware on the FuriPhone FLX1 directly, and
 switches between that and the shipped setup at any time.

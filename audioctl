@@ -1495,7 +1495,7 @@ bt_codec() {
     # back rather than trusted.
     got=$(bt_codec_preference) || got=""
     [ "$got" = "$want" ] \
-        || die "WirePlumber did not take the setting (it says: ${got:-nothing}) - is furios_pipewire's 51-bluez-ofono.conf installed and WirePlumber restarted since?"
+        || die "WirePlumber did not take the setting (it says: ${got:-nothing}) - is furios_audio's 51-bluez-ofono.conf installed and WirePlumber restarted since?"
     info "Bluetooth codec: $want"
 }
 
