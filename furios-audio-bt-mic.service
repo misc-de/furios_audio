@@ -23,7 +23,7 @@ StartLimitIntervalSec=0
 [Service]
 # PipeWire only: under PulseAudio the phone behaves as shipped. Skipped, not
 # failed, when another profile is stored - see PW_ONLY_HELPERS in audioctl.
-ExecCondition=/bin/sh -c 'for a in /usr/local/bin/audioctl /usr/bin/audioctl; do [ -x "$$a" ] && exec "$$a" is pw-hal; done; exit 1'
+ExecCondition=/bin/sh -c 'for a in /usr/local/bin/audioctl /usr/bin/audioctl; do [ -x "$$a" ] && exec "$$a" helper-allowed furios-audio-bt-mic.service; done; exit 1'
 Type=simple
 ExecStart=/usr/bin/furios-audio-bt-mic
 Restart=on-failure

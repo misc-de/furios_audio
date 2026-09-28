@@ -355,6 +355,23 @@ fire(dev)
 T.check_equal("a setting that does not exist leaves the call alone too", 0,
               #wp.calls_of("set_params"))
 
+-- The helpers switched off ("audioctl bt-extras off"): routing on or not, the
+-- call is left to WirePlumber. Unknown counts as on - an older schema.
+setup()
+wp.settings["furios.bluetooth-helpers"] = false
+dev = wp.add("device", droid_card("voicecall"))
+wp.add("device", bt_card())
+fire(dev)
+T.check_equal("with the helpers off a call is not touched, routing on or not", 0,
+              #wp.calls_of("set_params"))
+
+setup()
+wp.settings["furios.bluetooth-helpers"] = nil
+dev = wp.add("device", droid_card("voicecall"))
+wp.add("device", bt_card())
+fire(dev)
+T.check("an unknown master switch counts as on", #wp.calls_of("set_params") > 0)
+
 -- The fight that cost a real call: callaudiod keeps pulling the port back.
 -- After a few rounds the call has to go back to the phone rather than have
 -- the voice path rebuilt two or three times a second.

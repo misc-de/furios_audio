@@ -1644,11 +1644,7 @@ for u in pause-on-disconnect sco-hold bt-mic bt-reconnect; do
 done
 check "and disables none of them - the condition keeps them quiet" "" \
     "$(grep -E -- '--user disable furios-audio-(sco|bt|pause)' "$STUBDIR/systemctl.log")"
-for u in furios-audio-sco-hold furios-audio-bt-mic; do
-    check "$u.service only runs under pw-hal" "yes" \
-        "$(grep -q '^ExecCondition=.* is pw-hal' "$HERE/../$u.service" && echo yes || echo no)"
-done
-for u in furios-audio-pause-on-disconnect furios-audio-bt-reconnect; do
+for u in furios-audio-pause-on-disconnect furios-audio-bt-reconnect furios-audio-sco-hold furios-audio-bt-mic; do
     check "$u.service asks whether it may run" "yes" \
         "$(grep -q "^ExecCondition=.* helper-allowed $u.service" "$HERE/../$u.service" && echo yes || echo no)"
 done
@@ -1681,14 +1677,42 @@ check "and still stops the WirePlumber ones" "yes" \
 run_ctl bt-extras off >/dev/null
 check "off stops them" "yes" \
     "$(grep -qx -- '--user stop furios-audio-pause-on-disconnect.service' "$STUBDIR/systemctl.log" && echo yes || echo no)"
-check "and forgets the choice" "no" "$([ -e "$STUBDIR/state/bt-extras" ] && echo yes || echo no)"
+check "and records off" "off" "$(cat "$STUBDIR/state/bt-extras")"
+
+# Under pw-hal: on unless switched off - the stack as it was worked out.
+rm -f "$STUBDIR/state/bt-extras"
 echo pw-hal > "$STUBDIR/state/profile"
-check "under pw-hal everything runs, chosen or not" "effective=all" "$(run_ctl bt-extras | grep effective)"
+check "under pw-hal nothing chosen means everything runs" "effective=all" \
+    "$(run_ctl bt-extras | grep effective)"
 check_status "the SCO hold included" 0 run_ctl helper-allowed furios-audio-sco-hold.service
+make_recording_stub wpctl 0 ""
+rm -f "$STUBDIR/wpctl.args"
 : > "$STUBDIR/systemctl.log"
 run_ctl bt-extras off >/dev/null
-check "and the switch touches nothing there" "" \
-    "$(grep -E -- '--user (start|stop) ' "$STUBDIR/systemctl.log")"
+check "off under pw-hal stops every helper" "yes" \
+    "$(grep -qx -- '--user stop furios-audio-sco-hold.service' "$STUBDIR/systemctl.log" \
+       && grep -qx -- '--user stop furios-audio-bt-mic.service' "$STUBDIR/systemctl.log" && echo yes || echo no)"
+check "and tells WirePlumber's call routing to stand down" "yes" \
+    "$(grep -q -- '--save furios.bluetooth-helpers false' "$STUBDIR/wpctl.args" && echo yes || echo no)"
+check "nothing runs now" "effective=none" "$(run_ctl bt-extras | grep effective)"
+check_status "not even the SCO hold" 1 run_ctl helper-allowed furios-audio-sco-hold.service
+: > "$STUBDIR/systemctl.log"; rm -f "$STUBDIR/wpctl.args"
+run_ctl bt-extras on >/dev/null
+check "on starts them again" "yes" \
+    "$(grep -qx -- '--user start furios-audio-sco-hold.service' "$STUBDIR/systemctl.log" && echo yes || echo no)"
+check "and lets the routing act" "yes" \
+    "$(grep -q -- '--save furios.bluetooth-helpers true' "$STUBDIR/wpctl.args" && echo yes || echo no)"
+check "the routing choice itself is never touched" "no" \
+    "$(grep -q 'bluetooth-call-routing' "$STUBDIR/wpctl.args" && echo yes || echo no)"
+rm -f "$STUBDIR/wpctl" "$STUBDIR/wpctl.args"
+
+# Leaving pw-hal with nothing chosen: off under PulseAudio, as before.
+rm -f "$STUBDIR/state/bt-extras"
+: > "$STUBDIR/systemctl.log"
+( AUDIOCTL_LIB=1 AUDIOCTL_STATE_DIR="$STUBDIR/state" AUDIOCTL_ETCU="$STUBDIR/etc" \
+    . "$HERE/../audioctl"; apply standard ) >/dev/null 2>&1
+check "without a choice a switch to PulseAudio stops them all" "yes" \
+    "$(grep -qx -- '--user stop furios-audio-bt-reconnect.service' "$STUBDIR/systemctl.log" && echo yes || echo no)"
 check_status "an unknown word is refused" 1 run_ctl bt-extras maybe
 rm -f "$STUBDIR/systemctl"
 

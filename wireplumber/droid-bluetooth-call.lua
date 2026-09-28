@@ -54,6 +54,10 @@ BT_SINK_ROUTE   = "output-bluetooth_sco"
 BT_SOURCE_ROUTE = "input-bluetooth_sco_headset"
 
 SETTING = "furios.bluetooth-call-routing"
+-- The master switch for all of our Bluetooth helpers ("audioctl bt-extras").
+-- Separate from the one above, so switching the helpers off and on again
+-- gives back exactly the routing choice that was made before.
+HELPERS = "furios.bluetooth-helpers"
 
 -- How often the route may be pushed away before this gives up for the rest of
 -- the call. Three is enough to survive callaudiod setting the port once or
@@ -137,6 +141,14 @@ call_profile = nil
 -- Off unless someone turned it on. An unknown setting, an older WirePlumber,
 -- anything unexpected: all of that has to come out as "leave the call alone".
 function autoRoutingEnabled ()
+  -- Helpers switched off: WirePlumber's own behaviour. Unknown (an older
+  -- schema) counts as on - that is how this script behaved before it existed.
+  local hok, helpers = pcall (function ()
+    return Settings.get_boolean (HELPERS)
+  end)
+  if hok and helpers == false then
+    return false
+  end
   local ok, value = pcall (function ()
     return Settings.get_boolean (SETTING)
   end)

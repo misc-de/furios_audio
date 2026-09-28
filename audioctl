@@ -858,28 +858,50 @@ ensure_safety_net() {
 # only has to stop or start what is running now.
 PW_ONLY_HELPERS="furios-audio-pause-on-disconnect.service furios-audio-sco-hold.service furios-audio-bt-mic.service furios-audio-bt-reconnect.service"
 
-# The Bluetooth helpers that talk to BlueZ alone and so can run under
-# PulseAudio too - pausing when a headset goes, dialling it back when it hung
-# up. Everything else here is WirePlumber (the call on the headset, the SCO
-# hold, the headset microphone, the codec) and exists under pw-hal only.
-# Under pw-hal every helper runs, always: that is the stack as it was worked
-# out. Under the other profiles these two are an option, off unless chosen,
-# because they have not been lived with there yet.
+# Our Bluetooth helpers, switchable apart from the sound server
+# ("audioctl bt-extras"). Under pw-hal they are all of them: the call put on
+# the headset (the Lua routing, behind furios.bluetooth-helpers), the SCO
+# hold, the headset microphone, reconnect, pause on disconnect. Off there is
+# WirePlumber's own Bluetooth - music, and hands-free only as far as it goes by
+# itself. The ground they stand on stays: the native hands-free backend and
+# ofono without its HFP plugin are what give the card a hands-free profile at
+# all, and the codec choice has its own "Automatic".
+#
+# Under the other profiles only the two that talk to BlueZ alone can run -
+# pausing when a headset goes, dialling it back when it hung up - and they
+# have not been lived with there yet.
+#
+# Nothing chosen means on under pw-hal (the stack as it was worked out) and
+# off elsewhere; a choice once made holds for both.
 PA_CAPABLE_HELPERS="furios-audio-pause-on-disconnect.service furios-audio-bt-reconnect.service"
+BT_HELPERS_SETTING=furios.bluetooth-helpers
 BT_EXTRAS=$STATE_DIR/bt-extras
 
 bt_extras_on() {
-    [ "$(cat "$BT_EXTRAS" 2>/dev/null)" = on ]
+    case "$(cat "$BT_EXTRAS" 2>/dev/null)" in
+        on)  return 0 ;;
+        off) return 1 ;;
+        *)   [ "$(current_profile 2>/dev/null)" = pw-hal ] ;;
+    esac
 }
 
 # May this helper run now? What the units' ExecCondition asks.
 helper_allowed() {
     local unit=$1
+    bt_extras_on || return 1
     [ "$(current_profile 2>/dev/null)" = pw-hal ] && return 0
     case " $PA_CAPABLE_HELPERS " in
-        *" $unit "*) bt_extras_on ;;
+        *" $unit "*) return 0 ;;
         *) return 1 ;;
     esac
+}
+
+# Tell WirePlumber whether the call routing may act. Only where WirePlumber
+# runs the phone; quiet when it does not know the setting (an older install).
+bt_extras_sync_wireplumber() {
+    [ "$(current_profile 2>/dev/null)" = pw-hal ] || return 0
+    wpctl settings --save "$BT_HELPERS_SETTING" \
+        "$(bt_extras_on && echo true || echo false)" >/dev/null 2>&1 || true
 }
 
 pw_helpers() {
@@ -887,8 +909,9 @@ pw_helpers() {
     for u in $PW_ONLY_HELPERS; do
         uctl is-enabled "$u" >/dev/null 2>&1 || continue
         # Leaving pw-hal stops the helpers - except the ones chosen to go on
-        # running under PulseAudio.
-        if [ "$verb" = stop ] && bt_extras_on; then
+        # running under PulseAudio. Chosen explicitly: with nothing chosen
+        # the default under PulseAudio is off, whatever it was under pw-hal.
+        if [ "$verb" = stop ] && [ "$(cat "$BT_EXTRAS" 2>/dev/null)" = on ]; then
             case " $PA_CAPABLE_HELPERS " in *" $u "*) continue ;; esac
         fi
         run uctl "$verb" "$u" >/dev/null 2>&1 || true
@@ -905,10 +928,10 @@ bt_extras() {
         printf 'bt-extras=%s\n' "$(bt_extras_on && echo on || echo off)"
         printf 'profile=%s\n' "${p:-unknown}"
         # What actually runs: everything under pw-hal, the two BlueZ-only
-        # helpers under the others when chosen, nothing otherwise.
-        if [ "$p" = pw-hal ]; then echo 'effective=all'
-        elif bt_extras_on; then echo 'effective=basic'
-        else echo 'effective=none'; fi
+        # helpers under the others, nothing when switched off.
+        if ! bt_extras_on; then echo 'effective=none'
+        elif [ "$p" = pw-hal ]; then echo 'effective=all'
+        else echo 'effective=basic'; fi
         return 0 ;;
     on|off) ;;
     *) die "bt-extras needs on, off or status" ;;
@@ -917,18 +940,27 @@ bt_extras() {
         echo "[dry-run] bt-extras $want"
         return 0
     fi
-    if [ "$want" = on ]; then
-        write_state "$BT_EXTRAS" on || die "cannot write $BT_EXTRAS"
-    else
-        rm -f "$BT_EXTRAS" || die "cannot remove $BT_EXTRAS"
-    fi
-    # Under pw-hal nothing changes: there every helper runs anyway.
-    if [ "$p" = pw-hal ]; then
-        info "PipeWire owns the HAL - the Bluetooth helpers run there regardless"
-        return 0
-    fi
+    write_state "$BT_EXTRAS" "$want" || die "cannot write $BT_EXTRAS"
     ensure_pause_on_disconnect
     ensure_bt_reconnect
+    if [ "$p" = pw-hal ]; then
+        ensure_sco_hold
+        ensure_bt_mic
+        bt_extras_sync_wireplumber
+        for u in $PW_ONLY_HELPERS; do
+            if [ "$want" = on ]; then
+                run uctl start "$u" >/dev/null 2>&1 || true
+            else
+                run uctl stop "$u" >/dev/null 2>&1 || true
+            fi
+        done
+        if [ "$want" = on ]; then
+            info "Bluetooth helpers on: calls on the headset, its microphone, reconnect, pause on disconnect"
+        else
+            info "Bluetooth helpers off: WirePlumber's own Bluetooth handling"
+        fi
+        return 0
+    fi
     for u in $PA_CAPABLE_HELPERS; do
         if [ "$want" = on ]; then
             run uctl start "$u" >/dev/null 2>&1 || true
@@ -995,7 +1027,7 @@ switch_to() {
                 fi ;;
         esac
         # After the state file: the helpers' ExecCondition reads it.
-        [ "$p" = pw-hal ] && pw_helpers start
+        [ "$p" = pw-hal ] && { pw_helpers start; bt_extras_sync_wireplumber; }
         [ "$p" != standard ] && info "please check telephony: call, ringtone, earpiece/speaker."
         return "$kept"
     fi
