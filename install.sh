@@ -54,6 +54,7 @@ sudo install -m644 tunnel.conf               /usr/local/share/furios-audio/tunne
 sudo install -m644 furios-pw-tunnel.service  /etc/systemd/user/furios-pw-tunnel.service
 sudo install -m644 furios-audio-apply.service /etc/systemd/user/furios-audio-apply.service
 sudo install -m644 furios-audio-verify.service /etc/systemd/user/furios-audio-verify.service
+sudo install -m644 furios-audio-bt-pulse.service /etc/systemd/user/furios-audio-bt-pulse.service
 
 # Bluetooth calls, Bluetooth microphone, the podcast that must not resume in
 # somebody's pocket, and the routing refresh callaudiod needs. audioctl

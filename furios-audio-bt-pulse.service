@@ -1,0 +1,32 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 misc-de
+# SPDX-License-Identifier: MIT
+[Unit]
+# Two things PulseAudio gets wrong with Bluetooth headsets, put right when a
+# headset connects (see "the headset PulseAudio takes the wrong way round" in
+# audioctl):
+#   - a headset that connects by itself is taken for a sound source or for
+#     hands-free only, and music has nowhere to go - it is dialled again from
+#     the phone (one of the Bluetooth helpers, "audioctl bt-extras");
+#   - the codec chosen with "audioctl bt-codec" is forgotten with every
+#     connection - it is put back.
+# With neither chosen it does not run, and PulseAudio behaves as shipped.
+Description=Keep Bluetooth headsets right under PulseAudio
+PartOf=graphical-session.target
+After=pulseaudio.service
+
+# Same reasoning as the other watchers: no limit, backoff below.
+StartLimitIntervalSec=0
+
+[Service]
+# Only where PulseAudio holds the sound and something is chosen; skipped, not
+# failed, otherwise.
+ExecCondition=/bin/sh -c 'for a in /usr/local/bin/audioctl /usr/bin/audioctl; do [ -x "$$a" ] && exec "$$a" bt-pulse wanted; done; exit 1'
+Type=simple
+ExecStart=/bin/sh -c 'for a in /usr/local/bin/audioctl /usr/bin/audioctl; do [ -x "$$a" ] && exec "$$a" bt-pulse watch; done; exit 1'
+Restart=on-failure
+RestartSec=5
+RestartSteps=5
+RestartMaxDelaySec=300
+
+[Install]
+WantedBy=graphical-session.target

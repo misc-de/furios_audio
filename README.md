@@ -58,6 +58,16 @@ when it changes; `auto` leaves WirePlumber's own choice. Measured here while
 music plays (bluebinder plus wireplumber): AAC 7.2 %, SBC-XQ 7.0 %, SBC 4.3 %
 of a core - SBC saves 40 % and sounds audibly worse, SBC-XQ sounds like AAC.
 
+Under `standard` and `pw-tunnel` PulseAudio switches the codec itself
+(`pactl send-message /card/<card>/bluez switch-codec`): SBC and SBC-XQ only -
+FuriOS builds it without AAC - and one choice for all headsets. PulseAudio
+forgets it with every connection, so `furios-audio-bt-pulse.service` puts it
+back when a headset connects. The same watcher, with the Bluetooth helpers on
+(`audioctl bt-extras on`), mends a PulseAudio bug: a headset that connects by
+itself (out of its case) is sometimes taken for a sound *source*, and music
+has nowhere to go. It is then dialled again from the phone, which PulseAudio
+gets right. With neither chosen the watcher does not run.
+
 The Bluetooth helpers - held SCO link, headset microphone, reconnect, pause on
 disconnect - run under `pw-hal` only. Under `standard` the phone behaves
 exactly as shipped: the units stay enabled but skip themselves

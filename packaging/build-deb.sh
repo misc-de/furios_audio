@@ -104,6 +104,8 @@ chmod 644 "$STAGE/usr/lib/systemd/user/wireplumber.service.d/furios-bluez5-fix.c
 install -Dm644 furios-pw-tunnel.service       "$STAGE/usr/lib/systemd/user/furios-pw-tunnel.service"
 install -Dm644 furios-audio-apply.service     "$STAGE/usr/lib/systemd/user/furios-audio-apply.service"
 install -Dm644 furios-audio-verify.service    "$STAGE/usr/lib/systemd/user/furios-audio-verify.service"
+install -Dm644 furios-audio-bt-pulse.service \
+    "$STAGE/usr/lib/systemd/user/furios-audio-bt-pulse.service"
 install -Dm644 furios-audio-pause-on-disconnect.service \
     "$STAGE/usr/lib/systemd/user/furios-audio-pause-on-disconnect.service"
 install -Dm644 furios-audio-callaudio-refresh.service \
