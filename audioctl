@@ -472,6 +472,7 @@ wireplumber.profiles = {
     policy.droid-default-sink-policy = disabled
     policy.droid-bluetooth-call = disabled
     policy.droid-bluetooth-codec = disabled
+    policy.droid = disabled
   }
 }
 WPEOF

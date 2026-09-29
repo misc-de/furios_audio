@@ -126,4 +126,26 @@ check "uninstall.sh takes it away again" "yes" \
       "$(grep -q '/etc/systemd/system/ofono.service.d/30-furios-audio-hfp.conf' \
          "$ROOT/uninstall.sh" && echo yes || echo no)"
 
+# In WirePlumber 0.5 "optional" is every feature's default and loads nothing:
+# a component only loads when a profile requires it or a loaded component
+# wants it. 2026-09-28 17:57 to 2026-09-29, all four droid policies were
+# "optional" and none of them ran - so check each one is reached.
+printf '\neach droid script is loaded by something\n'
+CONF="$ROOT/wireplumber/50-droid.conf"
+REQUIRED=$(sed -n 's/^ *\([a-z.-]*\) *= *required.*/\1/p' "$CONF")
+WANTED=$(awk '
+    /provides *=/ { prov = $0; sub(/.*provides *= */, "", prov); sub(/ .*/, "", prov) }
+    /wants *= *\[/ { inw = 1 }
+    inw { line = $0; gsub(/wants *= *\[|\]|,/, " ", line); n = split(line, w, " ")
+          for (i = 1; i <= n; i++) if (w[i] ~ /^[a-z]/) print prov " " w[i] }
+    inw && /\]/ { inw = 0 }
+' "$CONF" | while read -r by what; do
+    printf '%s\n' "$REQUIRED" | grep -qx "$by" && echo "$what"
+done)
+for feature in $(sed -n 's/^ *provides *= *\(policy\.droid-[a-z-]*\).*/\1/p' "$CONF"); do
+    loaded=no
+    printf '%s\n' "$REQUIRED" "$WANTED" | grep -qx "$feature" && loaded=yes
+    check "$feature is required or wanted by something required" yes "$loaded"
+done
+
 summary
