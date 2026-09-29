@@ -160,13 +160,12 @@ with_audioctl() {
       AUDIOCTL_LIB=1 . "$HERE/../audioctl"
       STATE_DIR="$STUBDIR/state"; STICKY="$STATE_DIR/profile"; TRY="$STATE_DIR/profile.try"
       # Derived from STATE_DIR when audioctl was read, so it would still name
-      # the phone's own /var/lib/furios-audio - which is "on" here.
+      # the phone's own /var/lib/furios-audio.
       BT_EXTRAS="$STATE_DIR/bt-extras"
       ETCU="$STUBDIR/etc"; DROPIN="$ETCU/pipewire.service.d/50-furios-audio.conf"
       WPUSER="$STUBDIR/wpuser"; WPOFF="$WPUSER/99-furios-droid-off.conf"
       LOCAL="$STUBDIR/local"
       BT_CODEC_SEEN="$STUBDIR/bt-codecs"
-      BT_CODEC_PULSE="$STUBDIR/bt-codec-pulse"
       # The built plugin and PipeWire's modules, as a directory this suite
       # owns. Without them preflight refuses the pw-hal profile, and every
       # switch test below would only ever pass on a phone that happens to
@@ -1615,194 +1614,6 @@ check "and the status says per_device=no" "yes" \
     "$(with_audioctl 'bt_codec_status' | grep -qx 'per_device=no' && echo yes || echo no)"
 rm -rf "$STUBDIR/pactl" "$STUBDIR/wpctl" "$STUBDIR/wp" "$STUBDIR/bt-codecs"
 
-# --- the same choice under PulseAudio -----------------------------------------
-#
-# A PulseAudio that switches when told to and keeps what it was told in a
-# file, the way the real one answers send-message: JSON for list-codecs, a
-# quoted name for get-codec. It offers SBC and the three SBC-XQ rates - what
-# the phone's own PulseAudio 17 offers the soundcore, measured 29.9.2026.
-cat > "$STUBDIR/pactl" <<PACTL
-#!/bin/sh
-d="$STUBDIR"
-echo "\$*" >> "\$d/pactl.args"
-case "\$*" in
-info) echo 'Server Name: pulseaudio' ;;
-"list cards")
-    avail=yes; [ -e "\$d/sink-stuck" ] && avail=no
-    src=no; [ -e "\$d/source-read" ] && src=yes
-    printf 'Card #5\n\tName: bluez_card.F4_9D_8A_00_00_01\n\tProperties:\n\t\tbluez.path = "/org/bluez/hci0/dev_F4_9D_8A_00_00_01"\n\tProfiles:\n\t\ta2dp_source: High Fidelity Capture (A2DP Source) (sinks: 0, sources: 1, priority: 20, available: %s)\n\t\ta2dp_sink: High Fidelity Playback (A2DP Sink) (sinks: 1, sources: 0, priority: 40, available: %s)\n\tActive Profile: %s\n\n' "\$src" "\$avail" "\$(cat "\$d/pa-profile" 2>/dev/null || echo a2dp_sink)" ;;
-"list modules short") printf '12\tmodule-bluez5-discover\t\n26\tmodule-loopback\tsource="bluez_source.F4_9D_8A_00_00_01.a2dp_source" source_dont_move="true"\n27\tmodule-loopback\tsource="alsa_input.other"\n' ;;
-"list short cards") [ -e "\$d/no-card" ] || printf '5\tbluez_card.F4_9D_8A_00_00_01\tmodule-bluez5-device.c\n' ;;
-*" list-codecs") echo '[{"name":"sbc","description":"SBC"},{"name":"sbc_xq_453","description":"SBC XQ 453kbps"},{"name":"sbc_xq_512","description":"SBC XQ 512kbps"},{"name":"sbc_xq_552","description":"SBC XQ 552kbps"}]' ;;
-*" get-codec") [ -e "\$d/hfp" ] && exit 1; echo "\"\$(cat "\$d/pa-codec" 2>/dev/null || echo sbc)\"" ;;
-*" switch-codec "*) echo "\$4" | tr -d '"' > "\$d/pa-codec" ;;
-esac
-PACTL
-chmod +x "$STUBDIR/pactl"
-make_recording_stub systemctl 0 ""
-rm -f "$STUBDIR/pa-codec" "$STUBDIR/pactl.args" "$STUBDIR/bt-codec-pulse" "$STUBDIR/systemctl.args" \
-      "$STUBDIR/state/bt-extras"
-status_out=$(with_audioctl 'bt_codec status')
-check "under PulseAudio the status comes from PulseAudio, not WirePlumber" "yes" \
-    "$(printf '%s\n' "$status_out" | grep -qx 'server=pulseaudio' && echo yes || echo no)"
-check "nothing chosen reads as automatic, not as unsupported" "yes" \
-    "$(printf '%s\n' "$status_out" | grep -qx 'preference=auto' && echo yes || echo no)"
-check "the three SBC-XQ rates are the one sbc_xq" "yes" \
-    "$(printf '%s\n' "$status_out" | grep -qx 'offered=sbc sbc_xq' && echo yes || echo no)"
-check "and only those are offered for choosing" "yes" \
-    "$(printf '%s\n' "$status_out" | grep -qx 'choices=auto sbc sbc_xq' && echo yes || echo no)"
-check "the headsets seen under PipeWire are left alone" "no" \
-    "$([ -e "$STUBDIR/bt-codecs" ] && echo yes || echo no)"
-
-with_audioctl 'echo standard > "$STICKY"; rm -f "$TRY"; bt_codec sbc_xq' >/dev/null 2>&1
-check "sbc_xq switches to the highest rate the headset takes" "sbc_xq_552" \
-    "$(cat "$STUBDIR/pa-codec" 2>/dev/null)"
-check "the choice is kept for the next connect" "sbc_xq" \
-    "$(cat "$STUBDIR/bt-codec-pulse" 2>/dev/null)"
-check "and the watcher that puts it back is started" "yes" \
-    "$(grep -q 'start furios-audio-bt-pulse.service' "$STUBDIR/systemctl.args" && echo yes || echo no)"
-check "the status then says what plays" "yes" \
-    "$(with_audioctl 'bt_codec status' | grep -qx 'active=sbc_xq' && echo yes || echo no)"
-check "the watcher may run under standard with a choice made" "0" \
-    "$(with_audioctl 'echo standard > "$STICKY"; rm -f "$TRY"; bt_pulse wanted' >/dev/null 2>&1; echo $?)"
-
-rm -f "$STUBDIR/pactl.args"
-with_audioctl 'bt_codec sbc_xq' >/dev/null 2>&1
-check "a codec already playing is not switched again - no dropout" "no" \
-    "$(grep -q switch-codec "$STUBDIR/pactl.args" && echo yes || echo no)"
-
-echo sbc > "$STUBDIR/pa-codec"
-with_audioctl 'bt_pulse_apply' >/dev/null 2>&1
-check "a reconnect on PulseAudio's default gets the choice back" "sbc_xq_552" \
-    "$(cat "$STUBDIR/pa-codec")"
-
-echo a2dp_source > "$STUBDIR/pa-profile"; rm -f "$STUBDIR/pactl.args"
-check "a headset taken for a sound source plays nothing to switch" "no" \
-    "$(with_audioctl 'bt_codec status' | grep -q '^active=' && echo yes || echo no)"
-with_audioctl 'bt_pulse_apply' >/dev/null 2>&1
-check "and nothing is sent to it" "no" \
-    "$(grep -q switch-codec "$STUBDIR/pactl.args" && echo yes || echo no)"
-rm -f "$STUBDIR/pa-profile"
-
-touch "$STUBDIR/hfp"; echo handsfree_head_unit > "$STUBDIR/pa-profile"; rm -f "$STUBDIR/pactl.args"
-check "on hands-free there is nothing to switch, and that is no error" "0" \
-    "$(with_audioctl 'bt_pulse_apply' >/dev/null 2>&1; echo $?)"
-check "and nothing is sent" "no" \
-    "$(grep -q switch-codec "$STUBDIR/pactl.args" && echo yes || echo no)"
-rm -f "$STUBDIR/hfp" "$STUBDIR/pa-profile"
-
-check "AAC is refused where PulseAudio has none, and says what plays" "yes" \
-    "$(says 'bt_codec aac' 'does not offer aac under PulseAudio')"
-check "and is not kept" "sbc_xq" "$(cat "$STUBDIR/bt-codec-pulse" 2>/dev/null)"
-check "a codec per headset is refused under PulseAudio" "yes" \
-    "$(says 'bt_codec sbc --device F4:9D:8A:00:00:01' 'needs pw-hal')"
-check "an unknown codec is refused here too" "yes" \
-    "$(says 'bt_codec mp3' 'bt-codec needs one of')"
-
-rm -f "$STUBDIR/systemctl.args"
-with_audioctl 'bt_codec auto' >/dev/null 2>&1
-check "automatic forgets the choice" "no" \
-    "$([ -e "$STUBDIR/bt-codec-pulse" ] && echo yes || echo no)"
-check "stops the watcher - nothing else asks for it" "yes" \
-    "$(grep -q 'stop furios-audio-bt-pulse.service' "$STUBDIR/systemctl.args" && echo yes || echo no)"
-check "and goes back to PulseAudio's own default" "sbc" \
-    "$(cat "$STUBDIR/pa-codec")"
-check "with nothing chosen the watcher does not run" "1" \
-    "$(with_audioctl 'echo standard > "$STICKY"; rm -f "$TRY"; bt_pulse wanted' >/dev/null 2>&1; echo $?)"
-echo sbc_xq > "$STUBDIR/bt-codec-pulse"
-check "nor under pw-hal, whatever the file says" "1" \
-    "$(with_audioctl 'echo pw-hal > "$STICKY"; bt_pulse wanted' >/dev/null 2>&1; echo $?)"
-
-echo on > "$STUBDIR/state/bt-extras"
-check "with the Bluetooth helpers on the watcher runs even without a codec" "0" \
-    "$(with_audioctl 'echo standard > "$STICKY"; rm -f "$TRY"; bt_pulse wanted' >/dev/null 2>&1; echo $?)"
-
-# --- the headset PulseAudio takes the wrong way round --------------------------
-#
-# BlueZ as busctl answers it: the soundcore opens two sink endpoints, though
-# its list of services names AudioSource as well (measured 29.9.2026); ofono
-# has one modem, with or without a call.
-cat > "$STUBDIR/busctl" <<BUSCTL
-#!/bin/sh
-d="$STUBDIR"
-echo "\$*" >> "\$d/busctl.args"
-case "\$*" in
-*"--list tree org.bluez") printf '/org/bluez\n/org/bluez/hci0\n/org/bluez/hci0/dev_F4_9D_8A_00_00_01\n/org/bluez/hci0/dev_F4_9D_8A_00_00_01/fd0\n/org/bluez/hci0/dev_F4_9D_8A_00_00_01/sep1\n/org/bluez/hci0/dev_F4_9D_8A_00_00_01/sep3\n/org/bluez/hci0/dev_98_52_3D_00_00_02/sep1\n' ;;
-*"dev_F4_9D_8A_00_00_01/sep3 org.bluez.MediaEndpoint1 UUID")
-    [ -e "\$d/source-sep" ] && echo 's "0000110a-0000-1000-8000-00805f9b34fb"' || echo 's "0000110b-0000-1000-8000-00805f9b34fb"' ;;
-*"MediaEndpoint1 UUID") echo 's "0000110b-0000-1000-8000-00805f9b34fb"' ;;
-# The soundcore's list of services names AudioSource too - which must not count.
-*" UUIDs") echo 'as 3 "0000110a-0000-1000-8000-00805f9b34fb" "0000110b-0000-1000-8000-00805f9b34fb" "0000111e-0000-1000-8000-00805f9b34fb"' ;;
-*GetModems*) echo 'a(oa{sv}) 1 "/ril_0" 1 "Online" b true' ;;
-*GetCalls*) [ -e "\$d/in-call" ] && echo 'a(oa{sv}) 1 "/ril_0/voicecall01" 0' || echo 'a(oa{sv}) 0' ;;
-esac
-BUSCTL
-chmod +x "$STUBDIR/busctl"
-role() {
-    rm -f "$STUBDIR/busctl.args" "$STUBDIR/pactl.args" "$STUBDIR/tried".*
-    with_audioctl "BT_PULSE_SETTLE=0; BT_PULSE_TRIED=\"$STUBDIR/tried\"; bt_pulse_fix_role bluez_card.F4_9D_8A_00_00_01" 2>&1
-}
-dialled() { grep -q 'Device1 Connect$' "$STUBDIR/busctl.args" 2>/dev/null && echo yes || echo no; }
-
-echo a2dp_sink > "$STUBDIR/pa-profile"
-role >/dev/null
-check "a headset playing music is left alone" "no" "$(dialled)"
-
-touch "$STUBDIR/sink-stuck" "$STUBDIR/source-read"; echo a2dp_source > "$STUBDIR/pa-profile"
-out=$(role)
-check "taken for a sound source, it is dialled from the phone" "yes" "$(dialled)"
-check "AudioSource in its list of services does not keep it from that" "yes" "$(dialled)"
-check "after being taken down first" "yes" \
-    "$(grep -q 'Device1 Disconnect$' "$STUBDIR/busctl.args" && echo yes || echo no)"
-check "its loopback goes before the card - that order crashed PulseAudio" "yes" \
-    "$(grep -qx 'unload-module 26' "$STUBDIR/pactl.args" && echo yes || echo no)"
-check "and no other loopback" "no" \
-    "$(grep -qx 'unload-module 27' "$STUBDIR/pactl.args" && echo yes || echo no)"
-check "and it says why" "yes" \
-    "$(case "$out" in *"without its music profile (a2dp_source)"*) echo yes ;; *) echo no ;; esac)"
-
-echo handsfree_head_unit > "$STUBDIR/pa-profile"
-role >/dev/null
-check "on hands-free with the music read as a source, too (18:47)" "yes" "$(dialled)"
-rm -f "$STUBDIR/source-read"
-role >/dev/null
-check "hands-free with no music connection is the reconnect helper's" "no" "$(dialled)"
-touch "$STUBDIR/source-read"
-
-echo a2dp_source > "$STUBDIR/pa-profile"
-touch "$STUBDIR/in-call"
-role >/dev/null
-check "never during a call" "no" "$(dialled)"
-rm -f "$STUBDIR/in-call"
-
-touch "$STUBDIR/source-sep"
-role >/dev/null
-check "a device with a source endpoint of its own is left alone" "no" "$(dialled)"
-rm -f "$STUBDIR/source-sep"
-
-role >/dev/null
-rm -f "$STUBDIR/busctl.args"
-out=$(with_audioctl "BT_PULSE_SETTLE=0; BT_PULSE_TRIED=\"$STUBDIR/tried\"; bt_pulse_fix_role bluez_card.F4_9D_8A_00_00_01" 2>&1)
-check "a second time within a minute it is not dialled again" "no" "$(dialled)"
-check "and says so" "yes" \
-    "$(case "$out" in *"still has no music profile"*) echo yes ;; *) echo no ;; esac)"
-
-rm -f "$STUBDIR/state/bt-extras" "$STUBDIR/tried".* "$STUBDIR/busctl.args"
-with_audioctl "BT_PULSE_SETTLE=0; BT_PULSE_TRIED=\"$STUBDIR/tried\"; bt_pulse_check" >/dev/null 2>&1
-check "with the Bluetooth helpers off the watcher dials nothing" "no" "$(dialled)"
-echo on > "$STUBDIR/state/bt-extras"
-with_audioctl "BT_PULSE_SETTLE=0; BT_PULSE_TRIED=\"$STUBDIR/tried\"; bt_pulse_check" >/dev/null 2>&1
-check "and with them on it does" "yes" "$(dialled)"
-rm -f "$STUBDIR/sink-stuck" "$STUBDIR/source-read" "$STUBDIR/pa-profile" "$STUBDIR/busctl" "$STUBDIR/busctl.args" \
-      "$STUBDIR/tried".* "$STUBDIR/state/bt-extras"
-
-touch "$STUBDIR/no-card"
-check "without a headset the list is what every PulseAudio here can do" "yes" \
-    "$(with_audioctl 'bt_codec status' | grep -qx 'choices=auto sbc sbc_xq' && echo yes || echo no)"
-rm -f "$STUBDIR/no-card" "$STUBDIR/pa-codec" "$STUBDIR/pactl.args" "$STUBDIR/bt-codec-pulse" \
-      "$STUBDIR/systemctl.args" "$STUBDIR/pactl"
-stub systemctl 0 ""
-
 # --- our Bluetooth helpers belong to pw-hal ---------------------------------
 #
 # Under PulseAudio the phone is to behave as shipped, so the shipped behaviour
@@ -1841,35 +1652,32 @@ for u in furios-audio-pause-on-disconnect furios-audio-bt-reconnect furios-audio
         "$(grep -q "^ExecCondition=.* helper-allowed $u.service" "$HERE/../$u.service" && echo yes || echo no)"
 done
 
-# --- the two BlueZ-only helpers as an option outside pw-hal ------------------
+# --- under PulseAudio none of them, and no choice offered (29.9.2026) ---------
 run_ctl() {
     AUDIOCTL_STATE_DIR="$STUBDIR/state" bash "$HERE/../audioctl" "$@" 2>/dev/null
 }
 : > "$STUBDIR/systemctl.log"
 echo standard > "$STUBDIR/state/profile"; rm -f "$STUBDIR/state/bt-extras"
-check "off by default under PulseAudio" "bt-extras=off" "$(run_ctl bt-extras | head -1)"
+check "under PulseAudio the choice is not offered" "offered=no" "$(run_ctl bt-extras | grep offered)"
 check "and nothing runs" "effective=none" "$(run_ctl bt-extras | grep effective)"
-check_status "pause-on-disconnect may not run" 1 run_ctl helper-allowed furios-audio-pause-on-disconnect.service
 run_ctl bt-extras on >/dev/null
-check "on writes the choice" "on" "$(cat "$STUBDIR/state/bt-extras")"
-check "and says what runs" "effective=basic" "$(run_ctl bt-extras | grep effective)"
-check_status "pause-on-disconnect may run now" 0 run_ctl helper-allowed furios-audio-pause-on-disconnect.service
-check_status "reconnect too" 0 run_ctl helper-allowed furios-audio-bt-reconnect.service
-check_status "but not the SCO hold - that is WirePlumber" 1 run_ctl helper-allowed furios-audio-sco-hold.service
-check "on starts both at once" "yes" \
-    "$(grep -qx -- '--user start furios-audio-bt-reconnect.service' "$STUBDIR/systemctl.log" && echo yes || echo no)"
+check "on is kept for pw-hal" "on" "$(cat "$STUBDIR/state/bt-extras")"
+check "but still nothing runs under PulseAudio" "effective=none" "$(run_ctl bt-extras | grep effective)"
+for u in pause-on-disconnect bt-reconnect sco-hold bt-mic; do
+    check_status "furios-audio-$u may not run under PulseAudio, even switched on" 1 \
+        run_ctl helper-allowed furios-audio-$u.service
+done
+check "and on starts nothing" "" "$(grep -- '--user start' "$STUBDIR/systemctl.log")"
 : > "$STUBDIR/systemctl.log"
 ( AUDIOCTL_LIB=1 AUDIOCTL_STATE_DIR="$STUBDIR/state" AUDIOCTL_ETCU="$STUBDIR/etc" \
     . "$HERE/../audioctl"; apply standard ) >/dev/null 2>&1
-check "a switch to PulseAudio leaves the chosen ones running" "" \
-    "$(grep -E -- '--user stop furios-audio-(pause-on-disconnect|bt-reconnect)' "$STUBDIR/systemctl.log")"
-check "and still stops the WirePlumber ones" "yes" \
-    "$(grep -qx -- '--user stop furios-audio-sco-hold.service' "$STUBDIR/systemctl.log" && echo yes || echo no)"
-: > "$STUBDIR/systemctl.log"
-run_ctl bt-extras off >/dev/null
-check "off stops them" "yes" \
-    "$(grep -qx -- '--user stop furios-audio-pause-on-disconnect.service' "$STUBDIR/systemctl.log" && echo yes || echo no)"
-check "and records off" "off" "$(cat "$STUBDIR/state/bt-extras")"
+check "a switch to PulseAudio stops them all, chosen or not" "yes" \
+    "$(grep -qx -- '--user stop furios-audio-pause-on-disconnect.service' "$STUBDIR/systemctl.log" \
+       && grep -qx -- '--user stop furios-audio-bt-reconnect.service' "$STUBDIR/systemctl.log" && echo yes || echo no)"
+echo pw-hal > "$STUBDIR/state/profile"
+check "under pw-hal the choice is offered" "offered=yes" "$(run_ctl bt-extras | grep offered)"
+check "and a choice made under PulseAudio holds there" "effective=all" "$(run_ctl bt-extras | grep effective)"
+echo standard > "$STUBDIR/state/profile"
 
 # Under pw-hal: on unless switched off - the stack as it was worked out.
 rm -f "$STUBDIR/state/bt-extras"
@@ -1898,7 +1706,7 @@ check "the routing choice itself is never touched" "no" \
     "$(grep -q 'bluetooth-call-routing' "$STUBDIR/wpctl.args" && echo yes || echo no)"
 rm -f "$STUBDIR/wpctl" "$STUBDIR/wpctl.args"
 
-# Leaving pw-hal with nothing chosen: off under PulseAudio, as before.
+# Leaving pw-hal with nothing chosen: off under PulseAudio.
 rm -f "$STUBDIR/state/bt-extras"
 : > "$STUBDIR/systemctl.log"
 ( AUDIOCTL_LIB=1 AUDIOCTL_STATE_DIR="$STUBDIR/state" AUDIOCTL_ETCU="$STUBDIR/etc" \

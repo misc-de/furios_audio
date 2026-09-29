@@ -885,13 +885,17 @@ PW_ONLY_HELPERS="furios-audio-pause-on-disconnect.service furios-audio-sco-hold.
 # ofono without its HFP plugin are what give the card a hands-free profile at
 # all, and the codec choice has its own "Automatic".
 #
-# Under the other profiles only the two that talk to BlueZ alone can run -
-# pausing when a headset goes, dialling it back when it hung up - and they
-# have not been lived with there yet.
+# Under PulseAudio none of them runs, and the choice is not offered there:
+# the phone stays exactly as shipped (decided 29.9.2026). Two of them had
+# been allowed there before; after a day of trying, PulseAudio on this phone
+# spins a core as soon as a headset is on hands-free (the Bluetooth voice
+# path is the Android HAL's, and PulseAudio waits on a socket that never
+# delivers), its headset microphone records nothing, and its music side
+# needed mending from outside at every turn. PulseAudio is left alone; the
+# Bluetooth work lives under pw-hal.
 #
-# Nothing chosen means on under pw-hal (the stack as it was worked out) and
-# off elsewhere; a choice once made holds for both.
-PA_CAPABLE_HELPERS="furios-audio-pause-on-disconnect.service furios-audio-bt-reconnect.service"
+# Nothing chosen means on under pw-hal; a choice is kept for pw-hal whatever
+# profile it was made under.
 BT_HELPERS_SETTING=furios.bluetooth-helpers
 BT_EXTRAS=$STATE_DIR/bt-extras
 
@@ -905,13 +909,7 @@ bt_extras_on() {
 
 # May this helper run now? What the units' ExecCondition asks.
 helper_allowed() {
-    local unit=$1
-    bt_extras_on || return 1
-    [ "$(current_profile 2>/dev/null)" = pw-hal ] && return 0
-    case " $PA_CAPABLE_HELPERS " in
-        *" $unit "*) return 0 ;;
-        *) return 1 ;;
-    esac
+    bt_extras_on && [ "$(current_profile 2>/dev/null)" = pw-hal ]
 }
 
 # Tell WirePlumber whether the call routing may act. Only where WirePlumber
@@ -926,12 +924,6 @@ pw_helpers() {
     local verb=$1 u
     for u in $PW_ONLY_HELPERS; do
         uctl is-enabled "$u" >/dev/null 2>&1 || continue
-        # Leaving pw-hal stops the helpers - except the ones chosen to go on
-        # running under PulseAudio. Chosen explicitly: with nothing chosen
-        # the default under PulseAudio is off, whatever it was under pw-hal.
-        if [ "$verb" = stop ] && [ "$(cat "$BT_EXTRAS" 2>/dev/null)" = on ]; then
-            case " $PA_CAPABLE_HELPERS " in *" $u "*) continue ;; esac
-        fi
         run uctl "$verb" "$u" >/dev/null 2>&1 || true
     done
     return 0
@@ -945,11 +937,12 @@ bt_extras() {
     status)
         printf 'bt-extras=%s\n' "$(bt_extras_on && echo on || echo off)"
         printf 'profile=%s\n' "${p:-unknown}"
-        # What actually runs: everything under pw-hal, the two BlueZ-only
-        # helpers under the others, nothing when switched off.
-        if ! bt_extras_on; then echo 'effective=none'
-        elif [ "$p" = pw-hal ]; then echo 'effective=all'
-        else echo 'effective=basic'; fi
+        # What actually runs: everything under pw-hal, nothing elsewhere or
+        # when switched off. "offered" is whether there is a choice to make
+        # at all - not under PulseAudio.
+        if [ "$p" = pw-hal ]; then echo 'offered=yes'; else echo 'offered=no'; fi
+        if bt_extras_on && [ "$p" = pw-hal ]; then echo 'effective=all'
+        else echo 'effective=none'; fi
         return 0 ;;
     on|off) ;;
     *) die "bt-extras needs on, off or status" ;;
@@ -961,8 +954,6 @@ bt_extras() {
     write_state "$BT_EXTRAS" "$want" || die "cannot write $BT_EXTRAS"
     ensure_pause_on_disconnect
     ensure_bt_reconnect
-    ensure_bt_pulse
-    bt_pulse_kick
     if [ "$p" = pw-hal ]; then
         ensure_sco_hold
         ensure_bt_mic
@@ -981,18 +972,7 @@ bt_extras() {
         fi
         return 0
     fi
-    for u in $PA_CAPABLE_HELPERS; do
-        if [ "$want" = on ]; then
-            run uctl start "$u" >/dev/null 2>&1 || true
-        else
-            run uctl stop "$u" >/dev/null 2>&1 || true
-        fi
-    done
-    if [ "$want" = on ]; then
-        info "Bluetooth helpers on under $p: pause on disconnect, reconnect, and a headset PulseAudio took for the wrong kind of device"
-    else
-        info "Bluetooth helpers off under $p"
-    fi
+    info "Bluetooth helpers $want - kept for pw-hal; under $p nothing of them runs"
 }
 
 switch_to() {
@@ -1006,7 +986,6 @@ switch_to() {
     ensure_sco_hold
     ensure_bt_mic
     ensure_bt_reconnect
-    ensure_bt_pulse
     preflight "$p"
     printf 'switching: %s -> %s (%s)\n' "$prev" "$p" "$mode"
     apply "$p"
@@ -1049,7 +1028,6 @@ switch_to() {
         esac
         # After the state file: the helpers' ExecCondition reads it.
         [ "$p" = pw-hal ] && { pw_helpers start; bt_extras_sync_wireplumber; }
-        bt_pulse_kick
         [ "$p" != standard ] && info "please check telephony: call, ringtone, earpiece/speaker."
         return "$kept"
     fi
@@ -1673,352 +1651,6 @@ bt_codec_profiles() {
         }'
 }
 
-# --- the same choice under PulseAudio ---------------------------------------
-#
-# Under standard and pw-tunnel PulseAudio holds the headset and no WirePlumber
-# runs, so the setting above has nobody to read it. PulseAudio 15 and newer
-# switches codecs itself - "pactl send-message /card/<card>/bluez
-# switch-codec" - but only for the connection at hand: nothing in it keeps the
-# choice (module-card-restore stores profiles and ports, no codec), and the
-# next connect starts on its own default again. So the choice is kept in a
-# file of ours and put back by furios-audio-bt-pulse.service when a
-# headset connects.
-#
-# Under PulseAudio the phone is to behave as shipped (27.9.2026). This stays
-# within that: with nothing chosen there is no file, the unit is not enabled
-# and nothing of this runs.
-#
-# What PulseAudio can do is less than PipeWire: FuriOS builds it without AAC,
-# and SBC-XQ comes in three bit rates. Those are shown as the one "sbc_xq" the
-# app knows, and the highest one the headset takes is used.
-BT_CODEC_PULSE=${AUDIOCTL_BT_CODEC_PULSE:-$USERCFG/furios-audio/bt-codec-pulse}
-BT_PULSE_UNIT=furios-audio-bt-pulse.service
-
-# Does PulseAudio itself hold the sound, rather than PipeWire's stand-in?
-bt_pulse_owns() {
-    case "$(pulse_owner)" in
-        pulseaudio) return 0 ;;
-        *) return 1 ;;
-    esac
-}
-
-bt_pulse_card() {
-    pactl list short cards 2>/dev/null | awk '/bluez_card/ {print $2; exit}'
-}
-
-# PulseAudio's codec names, one per line - "sbc_xq_552", "ldac_hq" and so on.
-bt_pulse_codecs() {
-    pactl send-message "/card/$1/bluez" list-codecs 2>/dev/null \
-        | grep -o '"name":"[a-z0-9_]*"' | sed 's/.*:"\(.*\)"/\1/'
-}
-
-# The codec playing to the headset now, in PulseAudio's name. Nothing unless
-# the card plays music to it: get-codec also answers on hands-free (mSBC) and
-# on a2dp_source, where PulseAudio took the headset for a sound source - which
-# it does when the headset connects by itself (seen 29.9.2026, three times in
-# three, also with no codec ever switched).
-bt_pulse_active() {
-    [ "$(bt_active_profile "$1" 2>/dev/null)" = a2dp_sink ] || return 0
-    pactl send-message "/card/$1/bluez" get-codec 2>/dev/null | tr -d '"' | head -1
-}
-
-# PulseAudio's name -> the name used everywhere else.
-bt_pulse_short() {
-    case "$1" in
-        sbc_xq_*) printf 'sbc_xq' ;;
-        ldac_*)   printf 'ldac' ;;
-        *)        printf '%s' "$1" ;;
-    esac
-}
-
-# The PulseAudio codec to switch to for a choice, from what the card offers:
-# the best variant of it, or nothing when it offers none. Automatic is
-# PulseAudio's own default, plain SBC.
-bt_pulse_pick() {
-    local card=$1 want=$2 have c
-    have=$(bt_pulse_codecs "$card")
-    [ "$want" = auto ] && want=sbc
-    for c in $want ${want}_552 ${want}_512 ${want}_453 ${want}_hq ${want}_sq ${want}_mq; do
-        printf '%s\n' "$have" | grep -qx "$c" && { printf '%s' "$c"; return 0; }
-    done
-    return 1
-}
-
-bt_pulse_choice() {
-    local c
-    c=$(cat "$BT_CODEC_PULSE" 2>/dev/null)
-    case " $BT_CODECS " in
-        *" $c "*) printf '%s' "$c" ;;
-        *) printf 'auto' ;;
-    esac
-}
-
-# Put the choice on the connected headset. Quiet and successful when there is
-# nothing to do: no headset, hands-free, or already playing it.
-bt_pulse_apply() {
-    local want=${1:-$(bt_pulse_choice)} card active pick
-    card=$(bt_pulse_card)
-    [ -n "$card" ] || return 0
-    active=$(bt_pulse_active "$card")
-    [ -n "$active" ] || return 0
-    pick=$(bt_pulse_pick "$card" "$want") || {
-        warn "the headset does not offer $want under PulseAudio - it plays $(bt_pulse_short "$active")"
-        return 1
-    }
-    [ "$pick" = "$active" ] && return 0
-    if [ "$DRY" = 1 ]; then
-        echo "[dry-run] pactl send-message /card/$card/bluez switch-codec \"$pick\""
-        return 0
-    fi
-    pactl send-message "/card/$card/bluez" switch-codec "\"$pick\"" >/dev/null 2>&1
-    # The switch is asynchronous, and it is the answer that counts.
-    local i
-    for i in 1 2 3 4 5 6 7 8 9 10; do
-        [ "$(bt_pulse_active "$card")" = "$pick" ] && return 0
-        sleep 0.3
-    done
-    warn "PulseAudio did not switch to $pick (it plays $(bt_pulse_active "$card"))"
-    return 1
-}
-
-bt_pulse_status() {
-    local card active offered="" c s
-    printf 'server=pulseaudio\n'
-    printf 'preference=%s\n' "$(bt_pulse_choice)"
-    printf 'per_device=no\n'
-    card=$(bt_pulse_card)
-    if [ -n "$card" ]; then
-        printf 'card=%s\n' "$card"
-        printf 'device=%s\n' "$(bt_card_address "$card")"
-        active=$(bt_pulse_active "$card")
-        [ -n "$active" ] && printf 'active=%s\n' "$(bt_pulse_short "$active")"
-        for c in $(bt_pulse_codecs "$card"); do
-            s=$(bt_pulse_short "$c")
-            case " $offered " in *" $s "*) ;; *) offered="$offered $s" ;; esac
-        done
-        offered=${offered# }
-        printf 'offered=%s\n' "$offered"
-        # What the list may show: only what PulseAudio can do with this
-        # headset. The list of headsets seen is left alone - what one offers
-        # to PulseAudio is not what it offers to PipeWire.
-        printf 'choices=auto %s\n' "$offered"
-    else
-        # Nothing connected, nothing to ask: what every PulseAudio here does.
-        printf 'choices=auto sbc sbc_xq\n'
-    fi
-}
-
-bt_pulse_set() {
-    local want=$1
-    [ "${2:-}" = --device ] \
-        && die "a codec per headset needs pw-hal; under PulseAudio the choice is for all"
-    case " $BT_CODECS " in
-    *" $want "*) ;;
-    *) die "bt-codec needs one of: status $BT_CODECS" ;;
-    esac
-    # Refused before anything is kept when the connected headset cannot play
-    # it - a choice that fails at every connect helps nobody. Without a
-    # headset there is nothing to ask, and it is kept.
-    local card
-    card=$(bt_pulse_card)
-    if [ -n "$card" ] && [ -n "$(bt_pulse_active "$card")" ] \
-        && ! bt_pulse_pick "$card" "$want" >/dev/null; then
-        die "the headset does not offer $want under PulseAudio - it plays $(bt_pulse_short "$(bt_pulse_active "$card")")"
-    fi
-    if [ "$DRY" = 1 ]; then
-        echo "[dry-run] bt-codec $want under PulseAudio"
-        bt_pulse_apply "$want"
-        return
-    fi
-    if [ "$want" = auto ]; then
-        rm -f "$BT_CODEC_PULSE"
-    else
-        mkdir -p "$(dirname "$BT_CODEC_PULSE")" \
-            && printf '%s\n' "$want" > "$BT_CODEC_PULSE.tmp" \
-            && mv "$BT_CODEC_PULSE.tmp" "$BT_CODEC_PULSE" \
-            || die "could not write $BT_CODEC_PULSE"
-        uctl cat "$BT_PULSE_UNIT" >/dev/null 2>&1 \
-            || warn "$BT_PULSE_UNIT is not installed - the choice holds until the headset reconnects"
-    fi
-    ensure_bt_pulse
-    bt_pulse_kick
-    bt_pulse_apply "$want" || exit 1
-    info "Bluetooth codec: $want (PulseAudio)"
-}
-
-# --- the headset PulseAudio takes the wrong way round ------------------------
-#
-# When a headset connects by itself - out of its case, back in range -
-# PulseAudio on FuriOS does not take it for headphones. Seen 29.9.2026 with
-# the soundcore Liberty 4 Pro, three times in three and also with no codec
-# ever switched: the card came up as a2dp_source, a sound SOURCE, with a
-# loopback from it to the loudspeaker, or with that source available and
-# hands-free active; a2dp_sink said "available: no" and music had nowhere to
-# go. (Hands-free with no music connection at all is the reconnect helper's.) Connected from the phone
-# ("bluetoothctl connect") the same headset is right every time. And taking
-# it away in the wrong state crashed PulseAudio (SIGSEGV while unloading that
-# loopback); unloading the loopback first did not.
-#
-# So: a headset whose A2DP endpoints are all sinks - a phone streaming TO this
-# one has a source endpoint - and whose card offers a2dp_sink but
-# cannot use it, is taken down (loopback first) and dialled from here. Never
-# during a call, and once a minute per headset at most, so a headset that
-# really cannot do A2DP is not dialled in a loop.
-#
-# One of the Bluetooth helpers ("audioctl bt-extras"), and like them off
-# until chosen.
-BT_PULSE_TRIED=${XDG_RUNTIME_DIR:-/tmp}/furios-audio-bt-pulse-tried
-BT_PULSE_SETTLE=${BT_PULSE_SETTLE:-4}
-BT_PULSE_RETRY=${BT_PULSE_RETRY:-60}
-
-# "yes" when the card offers a2dp_sink but cannot use it, "no" when it can,
-# nothing when it has no a2dp_sink at all.
-bt_pulse_sink_stuck() {
-    bt_pulse_available "$1" a2dp_sink | sed 's/^no$/Y/; s/^yes$/no/; s/^Y$/yes/'
-}
-
-# "yes" or "no" for one profile of the card, nothing when it has none such.
-bt_pulse_available() {
-    pactl list cards 2>/dev/null | awk -v card="$1" -v prof="$2:" '
-        /^Card #/ { mine = 0 }
-        $1 == "Name:" { mine = ($2 == card) }
-        mine && $1 == prof { print (/available: no\)/ ? "no" : "yes"); exit }'
-}
-
-bt_pulse_path() {
-    pactl list cards 2>/dev/null | sed -n "/Name: $1\$/,/^\$/p" \
-        | sed -n 's/.*bluez\.path = "\(\/org\/bluez\/[A-Za-z0-9_\/]*\)"$/\1/p' | head -1
-}
-
-# Headphones only: the headset's own A2DP endpoints are all sinks (110b).
-# Not its list of services - the soundcore names AudioSource (110a) there as
-# well, which is likely why PulseAudio takes it for one, but the endpoints it
-# really opens are sinks, two of them. A phone streaming TO this one has a
-# source endpoint and is left alone.
-bt_pulse_sink_only() {
-    local sep uuid sinks=0
-    for sep in $(busctl --system --list tree org.bluez 2>/dev/null | grep "^$1/sep[0-9]*\$"); do
-        uuid=$(busctl --system get-property org.bluez "$sep" org.bluez.MediaEndpoint1 UUID 2>/dev/null)
-        case "$uuid" in
-            *0000110b-*) sinks=$((sinks + 1)) ;;
-            *0000110a-*) return 1 ;;
-        esac
-    done
-    [ "$sinks" -gt 0 ]
-}
-
-# Is a call up on any modem? Unknown counts as yes - better a headset left
-# as it is than a call dropped.
-bt_pulse_in_call() {
-    local modems m out
-    modems=$(busctl --system call org.ofono / org.ofono.Manager GetModems 2>/dev/null \
-        | grep -o '"/[A-Za-z0-9_/]*"' | tr -d '"') || return 0
-    for m in $modems; do
-        out=$(busctl --system call org.ofono "$m" org.ofono.VoiceCallManager GetCalls 2>/dev/null) || continue
-        case "$out" in "a(oa{sv}) 0"*) ;; *) return 0 ;; esac
-    done
-    return 1
-}
-
-bt_pulse_fix_role() {
-    local card=$1 path addr m
-    [ "$(bt_pulse_sink_stuck "$card")" = yes ] || return 0
-    path=$(bt_pulse_path "$card")
-    [ -n "$path" ] || return 0
-    bt_pulse_sink_only "$path" || return 0
-    # A2DP often comes a moment after hands-free; only what stays wrong counts.
-    sleep "$BT_PULSE_SETTLE"
-    [ "$(bt_pulse_sink_stuck "$card")" = yes ] || return 0
-    # Only the source mix-up: PulseAudio has the music connection, but as a
-    # source - a2dp_source available, whether it made that the active profile
-    # (17:53, 18:04) or went to hands-free (18:47). Without any music
-    # connection it is BlueZ's side, which furios-audio-bt-reconnect sees and
-    # mends by connecting A2DP (18:37) - two helpers pulling at one headset
-    # would be worse than either, and that one cannot see this case.
-    [ "$(bt_pulse_available "$card" a2dp_source)" = yes ] || return 0
-    bt_pulse_in_call && { warn "$card has no music profile, but a call is up - left alone"; return 0; }
-    addr=$(bt_card_address "$card")
-    if [ -n "$(find "$BT_PULSE_TRIED.$addr" -newermt "-$BT_PULSE_RETRY seconds" 2>/dev/null)" ]; then
-        warn "$addr still has no music profile after dialling it - left alone"
-        return 0
-    fi
-    : > "$BT_PULSE_TRIED.$addr"
-    warn "$addr connected without its music profile ($(bt_active_profile "$card")) - dialling it from the phone"
-    # The loopback first: taking the card away with it still there is what
-    # crashed PulseAudio.
-    for m in $(pactl list modules short 2>/dev/null \
-            | awk -v src="bluez_source.${card#bluez_card.}" \
-                '$2 == "module-loopback" && index($0, "source=\"" src) { print $1 }'); do
-        pactl unload-module "$m" >/dev/null 2>&1 || true
-    done
-    busctl --system --timeout=10 call org.bluez "$path" org.bluez.Device1 Disconnect >/dev/null 2>&1 || true
-    sleep 2
-    busctl --system --timeout=30 call org.bluez "$path" org.bluez.Device1 Connect >/dev/null 2>&1 \
-        || warn "could not dial $addr"
-}
-
-# May the watcher run? What its unit's ExecCondition asks: PulseAudio holds
-# the sound, and there is something to do - a codec chosen, or the Bluetooth
-# helpers on. The profile, not the running server: at boot PulseAudio may not
-# answer yet.
-bt_pulse_wanted() {
-    [ "$(current_profile 2>/dev/null)" != pw-hal ] || return 1
-    [ -s "$BT_CODEC_PULSE" ] && return 0
-    [ "$(cat "$BT_EXTRAS" 2>/dev/null)" = on ]
-}
-
-# Enabled like the other helpers; whether it runs is its ExecCondition.
-ensure_bt_pulse() {
-    uctl is-enabled "$BT_PULSE_UNIT" >/dev/null 2>&1 && return 0
-    uctl cat "$BT_PULSE_UNIT" >/dev/null 2>&1 || return 0
-    run uctl enable "$BT_PULSE_UNIT" >/dev/null 2>&1 || true
-}
-
-# Start or stop it to match what bt_pulse_wanted says now.
-bt_pulse_kick() {
-    uctl cat "$BT_PULSE_UNIT" >/dev/null 2>&1 || return 0
-    if bt_pulse_wanted; then
-        run uctl start "$BT_PULSE_UNIT" >/dev/null 2>&1 || true
-    else
-        run uctl stop "$BT_PULSE_UNIT" >/dev/null 2>&1 || true
-    fi
-}
-
-bt_pulse_check() {
-    local card
-    card=$(bt_pulse_card)
-    [ -n "$card" ] || return 0
-    [ "$(cat "$BT_EXTRAS" 2>/dev/null)" = on ] && bt_pulse_fix_role "$card"
-    [ -s "$BT_CODEC_PULSE" ] && { bt_pulse_apply || true; }
-    return 0
-}
-
-# The watcher: once now, then whenever a card comes or changes - a headset
-# connecting, or going back to music after a call. Ends with PulseAudio, so
-# systemd restarts it once there is a new one.
-bt_pulse_watch() {
-    bt_pulse_owns || die "PulseAudio is not the sound server"
-    bt_pulse_check
-    pactl subscribe 2>/dev/null | while read -r line; do
-        case "$line" in
-        *"'new' on card"*|*"'change' on card"*)
-            # The profile settles a moment after the card appears.
-            sleep 1
-            bt_pulse_check ;;
-        esac
-    done
-    die "pactl subscribe ended"
-}
-
-# audioctl bt-pulse wanted|watch - for the unit, not for people.
-bt_pulse() {
-    case "${1:-}" in
-    wanted) bt_pulse_wanted ;;
-    watch)  bt_pulse_watch ;;
-    *) die "bt-pulse needs wanted or watch" ;;
-    esac
-}
-
 bt_codec_status() {
     local pref card active prof codec avail offered="" addr="" choice a c n
     pref=$(bt_codec_preference) || pref=""
@@ -2083,12 +1715,6 @@ bt_codec_device() {
 
 bt_codec() {
     local want=${1:-status} got
-    if bt_pulse_owns; then
-        case "$want" in
-        status) bt_pulse_status; return 0 ;;
-        *) bt_pulse_set "$@"; return ;;
-        esac
-    fi
     case "$want" in
     status) bt_codec_status; return 0 ;;
     esac
@@ -2147,9 +1773,6 @@ audioctl - switch the audio stack
   audioctl bt-codec <codec> --device <address>
                                the same for one headset only; "default" makes
                                it follow the setting for all again
-                               Under PulseAudio (standard, pw-tunnel) the
-                               codec is switched by PulseAudio itself: SBC and
-                               SBC-XQ, no AAC, one choice for all headsets
   audioctl revert              back to standard immediately
   audioctl boot                write the stored profile's configuration
                                without starting anything (used at boot)
@@ -2285,7 +1908,6 @@ case "${1:-status}" in
     bt-call) [ $# -ge 2 ] || die "bt-call needs 'on', 'off' or 'watch'."; bt_call "$2" ;;
     bt-mic) [ $# -ge 2 ] || die "bt-mic needs 'on', 'off', 'test' or 'status'."; bt_mic "$2" "${3:-}" ;;
     bt-codec) bt_codec "${2:-status}" "${3:-}" "${4:-}" ;;
-    bt-pulse) bt_pulse "${2:-}" ;;
     revert) switch_to standard sticky ;;
     migrate) migrate_legacy ;;
     verify) verify && echo "OK - sink present." || { echo "no sink." >&2; exit 1; } ;;

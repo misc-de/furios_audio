@@ -8,7 +8,6 @@ systemctl --user disable --now furios-audio-apply.service furios-audio-verify.se
     furios-pw-tunnel.service furios-audio-pause-on-disconnect.service \
     furios-audio-callaudio-refresh.service furios-audio-sco-hold.service \
     furios-audio-bt-mic.service furios-audio-bt-reconnect.service \
-    furios-audio-bt-pulse.service \
     2>/dev/null || true
 # The echo suppression first, and in this order: take the mount down and drop
 # the marker while the tool is still there to do it. Removing the binary first
@@ -36,7 +35,6 @@ sudo rm -f /usr/local/bin/audioctl \
            /etc/systemd/user/furios-audio-sco-hold.service \
            /etc/systemd/user/furios-audio-bt-mic.service \
            /etc/systemd/user/furios-audio-bt-reconnect.service \
-           /etc/systemd/user/furios-audio-bt-pulse.service \
            /etc/systemd/user/pipewire.service.d/50-furios-audio.conf
 sudo rm -rf /usr/local/share/furios-audio /var/lib/furios-audio
 sudo rm -rf /usr/lib/aarch64-linux-gnu/spa-0.2/droid
