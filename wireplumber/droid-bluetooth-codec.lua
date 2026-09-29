@@ -50,7 +50,9 @@ DEVICE_SETTING = "furios.bluetooth-codec-devices"
 
 -- What was last asked of each card, so a headset that refuses a codec (the
 -- profile comes straight back) is not asked again and again. Cleared when the
--- setting changes.
+-- setting changes and when a card connects: PipeWire hands a reconnecting
+-- headset the same id again (2026-09-29: card 40 twice), and the entry left
+-- from the last connection kept the script from asking at all.
 tried = {}
 
 -- Headsets that refused a codec, by address: the codec they refused. Kept
@@ -157,6 +159,14 @@ function wantedProfile (card)
   return nil
 end
 
+-- The card with this id as it is now, or nil once it is gone. A timer must
+-- not hold on to the card it was started for: after a disconnect that proxy
+-- is dead ("wp_properties_get: assertion 'self != NULL' failed").
+function current (id)
+  local om = cutils.get_object_manager ("device")
+  return om:lookup { Constraint { "bound-id", "=", id, type = "gobject" } }
+end
+
 function addressOf (card)
   local addr = card and card.properties and card.properties["api.bluez5.address"]
   return addr and addr:upper () or nil
@@ -214,7 +224,12 @@ function setProfile (card, profile, why)
   })
   local codec = codecOf (profile) or profile.name
   Core.timeout_add (CHECK_MS, function ()
-    local ok, err = pcall (checkOutcome, card, profile, codec)
+    local ok, err = pcall (function ()
+      local now = current (id)
+      if now ~= nil then    -- gone meanwhile: that is no refusal
+        checkOutcome (now, profile, codec)
+      end
+    end)
     if not ok then
       log:warning ("bluetooth codec: checking failed - " .. tostring (err))
     end
@@ -258,7 +273,12 @@ function later (card, why)
       return false
     end
     pending[id] = nil
-    local ok, err = pcall (correct, card, why)
+    local ok, err = pcall (function ()
+      local now = current (id)
+      if now ~= nil then
+        correct (now, why)
+      end
+    end)
     if not ok then
       log:warning ("bluetooth codec: correcting failed - " .. tostring (err))
     end
@@ -286,6 +306,7 @@ preferred_codec_hook = SimpleEventHook {
       if not isBluez (card) or preferredCodec (card) == nil then
         return
       end
+      tried[card["bound-id"] or 0] = nil
       if codecOf (event:get_data ("selected-profile")) == nil then
         return
       end

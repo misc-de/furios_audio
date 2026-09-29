@@ -184,6 +184,39 @@ card.params.Profile = { HFP }                     -- a call came in meanwhile
 wait()
 T.check_equal("hands-free by the time of the check is not touched", "3", asked())
 
+-- 2026-09-29 06:34: the headset went into its case and came out again, and
+-- PipeWire gave the new card the same id. The request from before was still
+-- on record for that id, so nothing was asked and it stayed on AAC.
+setup("sbc_xq")
+card = wp.add("device", bt_card())
+select_profile(card, AAC)
+T.traced(function () wp.fire_timers() end)
+card.params.Profile = { SBC_XQ }
+wait()
+wp.objects.device = {}                            -- into the case
+card = wp.add("device", bt_card())                -- out again, same id 7
+select_profile(card, AAC)
+wait()
+T.check_equal("a card back under the same id is asked again", "3,3", asked())
+
+setup("sbc_xq")
+card = wp.add("device", bt_card())
+select_profile(card, AAC)
+wp.objects.device = {}                            -- gone before the wait ends
+wait()
+T.check_equal("a card gone before the wait ends is left alone", "", asked())
+
+setup("sbc_xq")
+card = wp.add("device", bt_card())
+select_profile(card, AAC)
+T.traced(function () wp.fire_timers() end)
+wp.objects.device = {}                            -- gone before the check
+wait()
+card = wp.add("device", bt_card())
+select_profile(card, AAC)
+wait()
+T.check_equal("leaving before the check is no refusal", "3,3", asked())
+
 -- --- switching back after a call ---------------------------------------------
 
 setup("sbc_xq")
