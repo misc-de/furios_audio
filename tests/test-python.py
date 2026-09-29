@@ -2781,6 +2781,23 @@ class BluetoothReconnect(unittest.TestCase):
             "org.bluez.MediaTransport1": {}}
         self.assertIn("A2DP back", self.check(rc))
 
+    def test_a_connect_without_music_gets_music(self):
+        """2026-09-29 after a reboot: the earbuds came back with AVRCP alone.
+        No transport ever existed, so none closed, and music stayed on the
+        speaker until ConnectProfile by hand."""
+        system = ReconnectBus()
+        rc = self.build(system, active=True)
+        with redirect_stdout(io.StringIO()):
+            rc.on_bluez_props(None, None, self.DEV,
+                              "org.freedesktop.DBus.Properties",
+                              "PropertiesChanged",
+                              FakeVariant(["org.bluez.Device1",
+                                           {"Connected": True}, []]))
+        self.assertEqual(system.profiles, [], "not before looking again")
+        self.assertIn("connecting A2DP", self.check(rc))
+        self.assertEqual(system.profiles,
+                         [(self.DEV, reconnect.A2DP_SINK_UUID)])
+
     def test_a_profile_accepted_without_music_is_said(self):
         """2026-09-28 21:55: "A2DP back", and the sound came from the
         phone's speaker - BlueZ had said yes, and no transport ever came."""

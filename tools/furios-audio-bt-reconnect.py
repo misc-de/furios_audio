@@ -339,6 +339,7 @@ class Reconnector:
         connected = changed.get("Connected")
         if connected is True:
             self.on_connected(path)
+            self.look_for_music(path)
         elif connected is False:
             self.on_disconnected(path)
 
@@ -423,7 +424,20 @@ class Reconnector:
     def on_music_gone(self, transport):
         """A music stream closed. Look again in a moment - see A2DP_CHECK_S."""
         dev = device_of(transport)
-        if dev is None or dev in self.a2dp_checks:
+        if dev is not None:
+            self.look_for_music(dev)
+
+    def look_for_music(self, dev):
+        """Check in A2DP_CHECK_S that this device has a music transport.
+
+        Also on every connect, not only when a stream closes: on 2026-09-29
+        the earbuds came back after a reboot with AVRCP alone, no A2DP, no
+        transport, and nothing ever closed - music stayed on the speaker until
+        ConnectProfile by hand. check_music leaves anything alone that is not
+        a trusted A2DP sink, so a car kit or a keyboard connecting costs one
+        property read.
+        """
+        if dev in self.a2dp_checks:
             return
         self.a2dp_checks[dev] = GLib.timeout_add_seconds(
             A2DP_CHECK_S, lambda: self.check_music(dev))
