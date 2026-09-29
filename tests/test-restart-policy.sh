@@ -82,6 +82,17 @@ for u in "$UNITS"/*.service; do
         "$(if [ -n "$maxdelay" ] && [ -z "$steps" ]; then echo 1; else echo 0; fi)"
 done
 
+# A unit that stops with the session has to be wanted by it too, or it stays
+# down when the session comes back: PartOf=graphical-session.target with
+# WantedBy=default.target lost all four Bluetooth helpers on 2026-09-29, when
+# lmkd killed the session and phosh restarted - default.target is reached
+# once per boot and never again.
+for u in "$UNITS"/*.service; do
+    grep -qx 'PartOf=graphical-session.target' "$u" || continue
+    check "$(basename "$u"): stops with the session, so it is wanted by it" \
+        "graphical-session.target" "$(value "$u" WantedBy)"
+done
+
 check "units were checked at all" "yes" \
     "$([ "$found" -gt 0 ] && echo yes || echo no)"
 

@@ -32,4 +32,4 @@ RestartMaxDelaySec=300
 
 
 [Install]
-WantedBy=default.target
+WantedBy=graphical-session.target
