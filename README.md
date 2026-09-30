@@ -30,6 +30,40 @@ The dependency on a specific PipeWire version is deliberate: the plugin is
 built against one SPA interface, and an update that broke it would otherwise
 take the sound with it silently.
 
+From the work tree instead: `./install.sh` (asks for root where it needs it)
+and `./uninstall.sh`, which also removes the package if one is installed and
+puts back what `audioctl` changed in your own configuration - `dpkg -r` alone
+cannot reach that.
+
+### What an uninstall puts back
+
+Every path this repository changes is written down once, before the first
+change: absent, or the file, link or directory that was there, with its mode.
+A second install or a later switch never replaces that record - the first
+original counts. The uninstall puts back exactly that, and only where the
+path is still what we made it; something you changed since is left alone and
+named in the output. Nothing is restored from what a shipped phone is assumed
+to look like.
+
+| Record | Written by | What it covers |
+|---|---|---|
+| `/var/lib/furios-audio-original/` (root, 0700) | `install.sh`, `install-hal.sh`, `tools/build-plugin.sh`, `tools/build-bluez5-aac.sh` | files and directories under `/usr/local`, `/usr/lib/…/spa-0.2`, `/etc/systemd` (units, drop-ins for ofono and WirePlumber, the echo unit's want), the masks in `/etc/systemd/user`, `/var/lib/furios-audio`, and the packages the plugin build installed |
+| `~/.config/furios-audio/original/` | `audioctl` (first switch, `bt-extras`, `bt-codec`, `boot`) and `install.sh` before its first `systemctl --user enable` | masks and copies of five units, the pipewire drop-in, the droid-off file, the wants of our units and of WirePlumber under `~/.config/systemd/user`, and `~/.local/state/wireplumber` |
+| `/run/furios-audio-dmnr/usip.original` | `furios-audio-dmnr on` | group and mode of `/dev/usip` before it was opened (the node is recreated at every boot, and so is this) |
+
+The system record is root's on purpose: it decides what is written into
+`/etc` and `/usr` on the way out, and `/var/lib/furios-audio` belongs to the
+user. `audioctl original status` shows the user's record. A phone set up by a
+version from before the record has none; the uninstall then removes our files
+as it always did and says so. The packages are removed only if apt would take
+nothing else along with them. The mechanism is `tools/original-state.sh`;
+`tests/test-original-state.sh` and `tests/test-uninstall.sh` check it from
+outside (snapshot, install, switch, uninstall, snapshot).
+
+`audioctl revert` is not an uninstall: it switches to the `standard`
+profile, which has to give working PulseAudio sound whatever the record says,
+and so it keeps its own masks under `~/.config`.
+
 ## Usage
 
 | Profile | What it means |
@@ -49,6 +83,8 @@ take the sound with it silently.
     audioctl bt-mic on|off       record from the headset outside a call
     audioctl bt-codec [codec]    music codec for Bluetooth headsets: auto,
                                  sbc, sbc_xq, aac, aptx, aptx_hd or ldac
+    audioctl original [status]   what was in your configuration before
+                                 audioctl first changed it
 
 Nothing here needs root.
 
