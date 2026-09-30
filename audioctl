@@ -65,6 +65,49 @@ first_existing() {
 LOCAL=$(dirname "$(first_existing /usr/local/share/furios-audio/pipewire-hal.conf \
                                   /usr/share/furios-audio/pipewire-hal.conf)")
 
+# --- what was there before the first switch ---------------------------------
+#
+# Everything audioctl writes under $HOME - masks and copies of five units, the
+# pipewire drop-in, the droid-off file, the wants of our units and of
+# WirePlumber, WirePlumber's saved settings - is recorded once, before the
+# first write, and "audioctl original restore" (which uninstall.sh runs) puts
+# back exactly that. The mechanism is tools/original-state.sh, shared with the
+# install scripts; the user's record lives beside the headsets audioctl
+# remembers, in ~/.config/furios-audio/original.
+#
+# It used to be a guess on the way out: every mask of those five units went,
+# every want of wireplumber.service went - also one somebody had set up long
+# before this repo was installed - and ~/.local/state/wireplumber went whole.
+ORIG_USER_DIR=${AUDIOCTL_ORIGINAL_DIR:-$USERCFG/furios-audio/original}
+# A caller that moved where audioctl writes (the tests do) but not where it
+# records would get a record of temporary paths in the REAL ~/.config - and a
+# later uninstall would take that for this phone's record. Found exactly so:
+# the first full test run left 43 such entries in ~/.config/furios-audio.
+# Without its own record directory such a caller records nothing.
+ORIG_OFF=0
+if [ -z "${AUDIOCTL_ORIGINAL_DIR:-}" ] \
+   && [ -n "${AUDIOCTL_ETCU:-}${AUDIOCTL_STATE_DIR:-}${AUDIOCTL_WPCONF_DIR:-}" ]; then
+    ORIG_OFF=1
+fi
+WPSTATE=${AUDIOCTL_WPSTATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/wireplumber}
+# Our user units and every place "enable" puts a want for them.
+OUR_USER_UNITS="furios-audio-apply.service furios-audio-verify.service furios-pw-tunnel.service
+    furios-audio-pause-on-disconnect.service furios-audio-callaudio-refresh.service
+    furios-audio-sco-hold.service furios-audio-bt-mic.service furios-audio-bt-reconnect.service"
+OUR_WANT_TARGETS="default.target graphical-session.target wireplumber.service"
+# Next to this file in the work tree, else where either install put it.
+ORIG_LIB=$(first_existing "$(dirname "${BASH_SOURCE[0]}")/tools/original-state.sh" \
+                          "$LOCAL/original-state.sh" \
+                          /usr/local/share/furios-audio/original-state.sh \
+                          /usr/share/furios-audio/original-state.sh)
+if [ -r "$ORIG_LIB" ]; then
+    # shellcheck source=tools/original-state.sh
+    . "$ORIG_LIB"
+    ORIG_OK=1
+else
+    ORIG_OK=0
+fi
+
 # Where the built plugin and PipeWire's own modules live.
 #
 # Overridable for the same reason ETCU is, and for a reason that had already
@@ -1739,6 +1782,147 @@ bt_codec() {
     info "Bluetooth codec: $want"
 }
 
+# --- the record of what was there before, and putting it back --------------
+#
+# See the block at the top, next to ORIG_USER_DIR, and tools/original-state.sh.
+
+# Every path under $HOME that audioctl or install.sh's "systemctl --user
+# enable" writes, one per line: "f <path>" for files and links, "t <path>" for
+# a directory that is state as a whole, "d <path>" for a directory we only
+# put things into.
+original_user_paths() {
+    local u t
+    printf 'd %s\n' "$USERCFG/systemd" "$ETCU" "$ETCU/pipewire.service.d" \
+        "$ETCU/pipewire.service.wants" "$(dirname "$WPUSER")" "$WPUSER"
+    for t in $OUR_WANT_TARGETS; do printf 'd %s\n' "$ETCU/$t.wants"; done
+    for u in pipewire-pulse.service pipewire-pulse.socket wireplumber.service \
+             pulseaudio.service pulseaudio.socket; do
+        printf 'f %s\n' "$ETCU/$u"
+    done
+    printf 'f %s\n' "$DROPIN" "$WPOFF" \
+        "$ETCU/pipewire.service.wants/wireplumber.service" \
+        "$ETCU/pipewire-session-manager.service"
+    for t in $OUR_WANT_TARGETS; do
+        for u in $OUR_USER_UNITS; do printf 'f %s\n' "$ETCU/$t.wants/$u"; done
+    done
+    printf 't %s\n' "$WPSTATE"
+}
+
+# Is what is at this path now something audioctl (or an older version of it)
+# put there? Asked when the record is taken - then it means "an older install
+# was here first" - and on the way out, where it means "still ours".
+original_is_ours() {
+    local p=$1
+    case "$p" in
+    "$ETCU"/pulseaudio.service|"$ETCU"/pulseaudio.socket|"$ETCU"/pipewire-pulse.service|\
+    "$ETCU"/pipewire-pulse.socket|"$ETCU"/wireplumber.service)
+        [ ! -e "$p" ] && [ ! -L "$p" ] && return 0
+        { [ -L "$p" ] && [ "$(readlink "$p")" = /dev/null ]; } || is_shadow "$p" ;;
+    "$DROPIN")
+        [ ! -e "$p" ] || grep -q 'pipewire-hal\.conf' "$p" 2>/dev/null ;;
+    "$WPOFF")
+        [ ! -e "$p" ] || grep -q 'Written by audioctl' "$p" 2>/dev/null ;;
+    "$ETCU/pipewire.service.wants/wireplumber.service"|"$ETCU/pipewire-session-manager.service")
+        # "enable wireplumber.service" writes both, "disable" removes both.
+        [ ! -e "$p" ] && [ ! -L "$p" ] && return 0
+        [ -L "$p" ] && [ "$(basename "$(readlink "$p")")" = wireplumber.service ] ;;
+    "$ETCU"/*.wants/furios-*)
+        [ ! -e "$p" ] || [ -L "$p" ] ;;
+    "$WPSTATE")
+        # Everything WirePlumber keeps is from a WirePlumber that ran because
+        # of us - FuriOS ships it masked.
+        return 0 ;;
+    *) return 1 ;;
+    esac
+}
+
+# Did an older version of this set the phone up before there was a record?
+# Then what is there now is not an original, and the record says "unknown".
+#
+# Only by what nobody but audioctl writes: its drop-in, its droid-off file, a
+# copy with its marker, a want of one of our units, a furios.* setting.
+# NOT a mask - a link to /dev/null is what anybody's "systemctl --user mask"
+# makes, and taking the user's own mask of pulseaudio.socket for an old
+# install of ours threw away their WirePlumber want and state with it.
+original_legacy_install() {
+    local u t
+    { [ -e "$DROPIN" ] || [ -e "$WPOFF" ]; } && return 0
+    for u in pipewire-pulse.service pipewire-pulse.socket wireplumber.service \
+             pulseaudio.service pulseaudio.socket; do
+        is_shadow "$ETCU/$u" && return 0
+    done
+    for t in $OUR_WANT_TARGETS; do
+        for u in $OUR_USER_UNITS; do [ -L "$ETCU/$t.wants/$u" ] && return 0; done
+    done
+    grep -qs '^furios\.' "$WPSTATE/sm-settings"
+}
+
+# Before the first write. Every call after that finds the record and leaves it.
+# uninstall.sh switches back with AUDIOCTL_NO_RECORD=1: a record taken on the
+# way out would be of our own state, and would hide that there was none.
+record_originals() {
+    [ "$DRY" = 1 ] && return 0
+    [ -n "${AUDIOCTL_NO_RECORD:-}" ] && return 0
+    [ "$ORIG_OFF" = 1 ] && return 0
+    if [ "$ORIG_OK" != 1 ]; then
+        warn "original-state.sh not found - what is here before this switch is not recorded"
+        return 0
+    fi
+    local ORIG_DIR=$ORIG_USER_DIR ORIG_SU= kind p flag legacy=0
+    # Cheap when done: the last path is the one written last.
+    orig_has_record "$WPSTATE" && return 0
+    original_legacy_install && legacy=1
+    while read -r kind p; do
+        orig_has_record "$p" && continue
+        flag=
+        case "$kind" in
+        d)  [ "$legacy" = 1 ] && flag=--ours-if-present
+            orig_record_dir "$p" $flag ;;
+        *)  # Ours by what it is, or - for WirePlumber's want and its state -
+            # there because an older version of this ran it.
+            # Only after an older install: on a phone audioctl never touched,
+            # whatever is there is the user's, however much it looks like ours.
+            if [ "$legacy" = 1 ] && { [ -e "$p" ] || [ -L "$p" ]; } && original_is_ours "$p"; then
+                flag=--ours-if-present
+            fi
+            orig_record "$p" $flag ;;
+        esac || warn "could not record $p"
+    done < <(original_user_paths)
+    [ "$legacy" = 1 ] && info "set up by an older version: what it wrote is recorded as unknown"
+    return 0
+}
+
+# audioctl original [status|record|restore]
+original() {
+    local ORIG_DIR=$ORIG_USER_DIR ORIG_SU= kind p rc=0
+    [ "$ORIG_OK" = 1 ] || die "original-state.sh not found - cannot $1"
+    case "${1:-status}" in
+    record) record_originals ;;
+    status)
+        [ -d "$ORIG_DIR/meta" ] || { echo "no record - nothing written yet, or set up by an older version"; return 0; }
+        while read -r kind p; do
+            if orig_has_record "$p"; then
+                printf '%-18s %s\n' "$(orig_recorded "$p" | cut -d' ' -f1)" "$p"
+            else
+                printf '%-18s %s\n' "-" "$p"
+            fi
+        done < <(original_user_paths) ;;
+    restore)
+        # The running stack is not touched here: uninstall.sh has already
+        # switched back to standard and stopped our units.
+        [ "$ORIG_OFF" = 1 ] && { warn "no record directory for these overrides"; return 3; }
+        if [ ! -d "$ORIG_DIR/meta" ]; then
+            warn "no record of what was here before audioctl (set up by an older version)"
+            return 3
+        fi
+        orig_restore_all original_is_ours || rc=1
+        # Directories last and only once they are empty; the record's own
+        # ordering already does that for the ones it knows.
+        return "$rc" ;;
+    *) die "original needs status, record or restore" ;;
+    esac
+}
+
 usage() {
     cat <<EOF
 audioctl - switch the audio stack
@@ -1778,6 +1962,10 @@ audioctl - switch the audio stack
                                without starting anything (used at boot)
   audioctl boot-check          after the stack: fall back to standard if the
                                profile came up without a sink (used at boot)
+  audioctl original [status|record|restore]
+                               what was here before audioctl first changed
+                               anything, and putting exactly that back
+                               (uninstall.sh does)
   sudo audioctl migrate        once, if an older version left system-wide
                                state behind (it says so when it matters)
   audioctl verify              check whether a sink is there
@@ -1852,7 +2040,8 @@ fi
 if [ "$(id -u)" -eq 0 ]; then
     for _v in AUDIOCTL_ETCU AUDIOCTL_LIB AUDIOCTL_STATE_DIR AUDIOCTL_WPCONF_DIR \
               AUDIOCTL_LEGACY_ETCU AUDIOCTL_LEGACY_WP AUDIOCTL_VENDOR_UNITS \
-              AUDIOCTL_PLUGIN_DIR AUDIOCTL_PW_MODULE_DIR; do
+              AUDIOCTL_PLUGIN_DIR AUDIOCTL_PW_MODULE_DIR \
+              AUDIOCTL_ORIGINAL_DIR AUDIOCTL_WPSTATE_DIR; do
         if [ -n "${!_v:-}" ]; then
             die "refusing to honour $_v as root - that would make this a way of deleting arbitrary files."
         fi
@@ -1861,6 +2050,13 @@ fi
 
 args=(); for a in "$@"; do [ "$a" = --dry-run ] && DRY=1 || args+=("$a"); done
 set -- ${args+"${args[@]}"}
+# Every command that writes something under $HOME records first what is there
+# - once; after the first time this finds the record and returns.
+case "${1:-status}" in
+    toggle|try|set|boot|boot-check|restart|revert) record_originals ;;
+    bt-extras) case "${2:-status}" in on|off) record_originals ;; esac ;;
+    bt-codec)  case "${2:-status}" in status) ;; *) record_originals ;; esac ;;
+esac
 case "${1:-status}" in
     status) status ;;
     # Toggle: deliberately in test mode, so a reboot always leads back to the
@@ -1910,6 +2106,7 @@ case "${1:-status}" in
     bt-codec) bt_codec "${2:-status}" "${3:-}" "${4:-}" ;;
     revert) switch_to standard sticky ;;
     migrate) migrate_legacy ;;
+    original) original "${2:-status}" ;;
     verify) verify && echo "OK - sink present." || { echo "no sink." >&2; exit 1; } ;;
     -h|--help|help) usage ;;
     *) usage; exit 1 ;;
