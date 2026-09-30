@@ -171,19 +171,40 @@ usip_open() {
     [ "$(stat -c '%G %a' "$USIP" 2>/dev/null)" = "$USIP_GROUP 660" ]
 }
 
+# What the node looked like before "on" first opened it - group and mode -
+# so that "off" puts back exactly that rather than what the kernel is assumed
+# to create it with. In the root-owned run directory: the node is made anew at
+# every boot, and so is this record. The first one counts; a second "on" finds
+# it and leaves it.
+USIP_ORIGINAL=$RUNDIR/usip.original
+
 # Both return true only when they changed something.
 usip_grant() {
     [ -e "$USIP" ] || return 1
     usip_open && return 1
+    if [ ! -e "$USIP_ORIGINAL" ]; then
+        sudo mkdir -p "$RUNDIR"
+        sudo chmod 0755 "$RUNDIR"
+        stat -c '%G %a' "$USIP" | sudo tee "$USIP_ORIGINAL" >/dev/null
+    fi
     sudo chgrp "$USIP_GROUP" "$USIP"
     sudo chmod 0660 "$USIP"
 }
 
+# Only while it is still as "on" left it. Somebody who changed it since
+# changed it on purpose, and it stays as they made it.
 usip_close() {
+    local group=$USIP_GROUP_OFF mode=0600
     [ -e "$USIP" ] || return 1
-    usip_open || return 1
-    sudo chmod 0600 "$USIP"
-    sudo chgrp "$USIP_GROUP_OFF" "$USIP"
+    usip_open || { [ -e "$USIP_ORIGINAL" ] && echo "usip:  $USIP was changed since - left as it is" >&2; return 1; }
+    if [ -r "$USIP_ORIGINAL" ]; then
+        read -r group mode < "$USIP_ORIGINAL"
+    else
+        echo "usip:  no record of $USIP before it was opened - closing it to $USIP_GROUP_OFF 0600" >&2
+    fi
+    sudo chmod "$mode" "$USIP"
+    sudo chgrp "$group" "$USIP"
+    sudo rm -f "$USIP_ORIGINAL"
 }
 
 mounted_count() {

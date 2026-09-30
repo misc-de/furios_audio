@@ -218,4 +218,28 @@ check "uninstall.sh removes the unit" "yes" \
 check "and the marker with it" "yes" \
     "$(grep -q 'furios-audio-dmnr.persistent' "$ROOT/uninstall.sh" && echo yes || echo no)"
 
+# "off" used to close the node to root 0600 - what the kernel was assumed to
+# create it with. It puts back what was there before "on" instead, and leaves
+# it alone when somebody changed it since.
+run_tool off >/dev/null
+chmod 0640 "$TMP/usip"
+run_tool on >/dev/null
+check "a node that was not as assumed is opened" "660" "$(stat -c %a "$TMP/usip")"
+run_tool off >/dev/null
+check "and off puts back what it was, not what it was assumed to be" "640" "$(stat -c %a "$TMP/usip")"
+run_tool on >/dev/null
+run_tool on >/dev/null
+check "a second on keeps the first record" "640" \
+    "$(run_tool off >/dev/null; stat -c %a "$TMP/usip")"
+run_tool on >/dev/null
+chmod 0664 "$TMP/usip"
+out=$(run_tool off)
+check "changed by somebody after on: left as they made it" "664" "$(stat -c %a "$TMP/usip")"
+check "and off says so" yes "$(printf '%s' "$out" | grep -q 'changed since - left as it is' && echo yes || echo no)"
+rm -f "$TMP/run/usip.original"
+chmod 0660 "$TMP/usip"
+out=$(run_tool off)
+check "no record (opened by an older version): closed as before, and said" "600 yes" \
+    "$(stat -c %a "$TMP/usip") $(printf '%s' "$out" | grep -q 'no record' && echo yes || echo no)"
+
 summary
