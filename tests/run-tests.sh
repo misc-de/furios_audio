@@ -29,6 +29,7 @@ run() {
 run "audioctl" bash "$HERE/test-audioctl.sh"
 run "install, uninstall and package still agree" bash "$HERE/test-install.sh"
 run "install, use and uninstall leave nothing behind" bash "$HERE/test-uninstall.sh"
+run "the original state: recorded before, put back exactly" bash "$HERE/test-original-state.sh"
 run "wireplumber configuration" bash "$HERE/test-wireplumber-conf.sh"
 run "callaudiod refresh" bash "$HERE/test-callaudio-refresh.sh"
 run "echo suppression, and remembering it" bash "$HERE/test-dmnr.sh"

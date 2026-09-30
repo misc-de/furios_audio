@@ -39,27 +39,29 @@ W=$(mktemp -d)
 trap 'chmod -R u+w "$W" 2>/dev/null; rm -rf "$W"' EXIT
 
 # --- a phone as shipped, where the scripts write ----------------------------
+# Kept pristine; every round below runs on a copy of it.
+P=$W/pristine
 # /etc/systemd as it is here: the FuriOS masks are the point of the restore.
-mkdir -p "$W/etc-systemd" "$W/usr-local" "$W/var-lib" "$W/spa" "$W/run-user" \
-         "$W/home/.config" "$W/home/.local/share" "$W/home/.local/state" "$W/home/.cache"
-chmod 700 "$W/run-user"
-cp -a /etc/systemd/. "$W/etc-systemd/" 2>/dev/null
+mkdir -p "$P/etc-systemd" "$P/usr-local" "$P/var-lib" "$P/spa" "$P/run-user" \
+         "$P/home/.config" "$P/home/.local/share" "$P/home/.local/state" "$P/home/.cache"
+chmod 700 "$P/run-user"
+cp -a /etc/systemd/. "$P/etc-systemd/" 2>/dev/null
 # ...but without this repo: on the phone this runs on, it is usually
 # installed, and "before" was then a phone with furios_audio on it. The
 # uninstall took those files away and the check below counted each of them
 # as something lost - 13 findings that were the test's, not the scripts'.
-rm -rf "$W/etc-systemd/system/furios-audio-dmnr.service" \
-       "$W/etc-systemd/system/multi-user.target.wants/furios-audio-dmnr.service" \
-       "$W/etc-systemd/system/ofono.service.d/30-furios-audio-hfp.conf" \
-       "$W/etc-systemd/user/wireplumber.service.d/furios-bluez5-fix.conf" \
-       "$W/etc-systemd/user"/furios-audio-*.service "$W/etc-systemd/user/furios-pw-tunnel.service"
-rmdir "$W/etc-systemd/system/ofono.service.d" "$W/etc-systemd/user/wireplumber.service.d" 2>/dev/null
+rm -rf "$P/etc-systemd/system/furios-audio-dmnr.service" \
+       "$P/etc-systemd/system/multi-user.target.wants/furios-audio-dmnr.service" \
+       "$P/etc-systemd/system/ofono.service.d/30-furios-audio-hfp.conf" \
+       "$P/etc-systemd/user/wireplumber.service.d/furios-bluez5-fix.conf" \
+       "$P/etc-systemd/user"/furios-audio-*.service "$P/etc-systemd/user/furios-pw-tunnel.service"
+rmdir "$P/etc-systemd/system/ofono.service.d" "$P/etc-systemd/user/wireplumber.service.d" 2>/dev/null
 # /usr/local as a new phone has it: the standard directories and nothing in them.
-for d in /usr/local/*/; do mkdir -p "$W/usr-local/$(basename "$d")"; done
+for d in /usr/local/*/; do mkdir -p "$P/usr-local/$(basename "$d")"; done
 # PipeWire's plugins, without what we would have put there: the droid plugin
 # and the AAC module tools/build-bluez5-aac.sh builds. Debian ships neither.
-cp -a "$SPA/." "$W/spa/"
-rm -rf "$W/spa/droid" "$W/spa/bluez5/libspa-codec-bluez5-aac.so" "$W/spa/bluez5/aac-built-against"
+cp -a "$SPA/." "$P/spa/"
+rm -rf "$P/spa/droid" "$P/spa/bluez5/libspa-codec-bluez5-aac.so" "$P/spa/bluez5/aac-built-against"
 
 # The work tree as it is, uncommitted changes included - but the plugin is not
 # built here, that is a job of minutes and a network. A stand-in file is enough:
@@ -187,54 +189,151 @@ snap() {
 if touch "$REAL_ROOT/.sandbox-probe" 2>/dev/null; then
     rm -f "$REAL_ROOT/.sandbox-probe"; echo "SANDBOX LEAKS"; exit 99
 fi
-snap > "$W/before"
+R=$W/$ROUND
+# The phone is not always the one FuriOS shipped. "modified" is one that
+# somebody has already made their own - and each of these is something the old
+# uninstall.sh destroyed or invented, because it restored from what it believed
+# a phone looks like rather than from what this one looked like:
+#   - WirePlumber enabled by hand, want and alias under ~/.config
+#   - pulseaudio.socket masked by the user
+#   - WirePlumber state of their own under ~/.local/state
+#   - another repository's want next to ours (the old glob took furios-*)
+#   - FuriOS' own wireplumber mask in /etc not there
+#   - someone else's files in the directories we put ours into
+if [ "$ROUND" = modified ]; then
+    U=$HOME/.config/systemd/user
+    mkdir -p "$U/pipewire.service.wants" "$U/default.target.wants" "$HOME/.local/state/wireplumber"
+    ln -s /usr/lib/systemd/user/wireplumber.service "$U/pipewire.service.wants/wireplumber.service"
+    ln -s /usr/lib/systemd/user/wireplumber.service "$U/pipewire-session-manager.service"
+    ln -s /dev/null "$U/pulseaudio.socket"
+    printf '[default-nodes]\ndefault.configured.audio.sink=mine\n' > "$HOME/.local/state/wireplumber/default-nodes"
+    printf '[Service]\nExecStart=/bin/true\n[Install]\nWantedBy=default.target\n' > "$U/furios-gps-contribute.service"
+    ln -s "$U/furios-gps-contribute.service" "$U/default.target.wants/furios-gps-contribute.service"
+    rm -f /etc/systemd/user/wireplumber.service
+    mkdir -p /usr/local/share/wireplumber/wireplumber.conf.d /etc/systemd/system/ofono.service.d
+    echo '# not ours' > /usr/local/share/wireplumber/wireplumber.conf.d/60-user.conf
+    printf '[Service]\nEnvironment=NOT_OURS=1\n' > /etc/systemd/system/ofono.service.d/10-other.conf
+fi
+snap > "$R/before"
 cd "$W/repo"
-./install.sh > "$W/install.log" 2>&1 || { echo "install.sh failed"; tail -20 "$W/install.log"; exit 1; }
-snap > "$W/installed"
+./install.sh > "$R/install.log" 2>&1 || { echo "install.sh failed"; tail -20 "$R/install.log"; exit 1; }
+snap > "$R/installed"
+# A second install must not replace the record with what the first one made.
+if [ "$ROUND" = modified ]; then
+    ./install.sh > "$R/install2.log" 2>&1 || { echo "second install.sh failed"; tail -20 "$R/install2.log"; exit 1; }
+fi
 # Use: every profile once, as a phone would see them, with the helpers
 # switched off and on again and the Bluetooth plugin fix run as WirePlumber
 # would run it.
 export VERIFY_TRIES=1 CALL_CARD_TRIES=1 CALLAUDIO_WARMUP=0
 { audioctl set pw-hal; audioctl bt-extras off; audioctl try pw-tunnel
   audioctl set pw-hal; audioctl bt-extras on; audioctl boot
-  furios-audio-bluez5-fix; } > "$W/use.log" 2>&1
-snap > "$W/used"
-./uninstall.sh > "$W/uninstall.log" 2>&1 || { echo "uninstall.sh failed"; tail -20 "$W/uninstall.log"; exit 1; }
-snap > "$W/after"
+  furios-audio-bluez5-fix; } > "$R/use.log" 2>&1
+snap > "$R/used"
+case "$ROUND" in
+modified)
+    # The user edits one of ours after it was installed. It is theirs now.
+    printf '[Service]\nExecStart=\nExecStart=/usr/sbin/ofonod --nodetach -d\n' \
+        > /etc/systemd/system/ofono.service.d/30-furios-audio-hfp.conf ;;
+norecord)
+    # A phone set up by a version from before the record.
+    rm -rf /var/lib/furios-audio-original "$HOME/.config/furios-audio/original" ;;
+esac
+./uninstall.sh > "$R/uninstall.log" 2>&1 || { echo "uninstall.sh failed"; tail -20 "$R/uninstall.log"; exit 1; }
+snap > "$R/after"
 EOF
 chmod 755 "$W/scenario.sh"
 
-echo "-- install, use, uninstall, in a sandbox"
-out=$(bwrap --ro-bind / / --dev /dev --proc /proc --tmpfs /run --tmpfs /tmp \
-    --bind "$W" "$W" \
-    --bind "$W/etc-systemd" /etc/systemd \
-    --bind "$W/usr-local" /usr/local \
-    --bind "$W/var-lib" /var/lib --ro-bind /var/lib/dpkg /var/lib/dpkg \
-    --bind "$W/spa" "$SPA" \
-    --unshare-all --die-with-parent \
-    --setenv HOME "$W/home" --setenv XDG_RUNTIME_DIR "$W/run-user" \
-    --unsetenv XDG_CONFIG_HOME --unsetenv XDG_STATE_HOME --unsetenv XDG_CACHE_HOME \
-    --unsetenv DBUS_SESSION_BUS_ADDRESS \
-    --setenv PATH "$S:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin" \
-    --setenv STUB_LOG "$W/systemctl.log" --setenv W "$W" --setenv SPA "$SPA" \
-    --setenv REAL_ROOT "$ROOT" \
-    bash "$W/scenario.sh" 2>&1)
-rc=$?
-check "the sandbox ran the whole round" 0 "$rc"
-[ "$rc" = 0 ] || { printf '%s\n' "$out" | sed 's/^/       /'; summary; exit; }
+# One round: a fresh copy of the pristine phone, the scenario inside it.
+round() {
+    local R=$W/$1
+    mkdir -p "$R"
+    cp -a "$P/." "$R/"
+    bwrap --ro-bind / / --dev /dev --proc /proc --tmpfs /run --tmpfs /tmp \
+        --bind "$W" "$W" \
+        --bind "$R/etc-systemd" /etc/systemd \
+        --bind "$R/usr-local" /usr/local \
+        --bind "$R/var-lib" /var/lib --ro-bind /var/lib/dpkg /var/lib/dpkg \
+        --bind "$R/spa" "$SPA" \
+        --unshare-all --die-with-parent \
+        --setenv HOME "$R/home" --setenv XDG_RUNTIME_DIR "$R/run-user" \
+        --unsetenv XDG_CONFIG_HOME --unsetenv XDG_STATE_HOME --unsetenv XDG_CACHE_HOME \
+        --unsetenv DBUS_SESSION_BUS_ADDRESS \
+        --setenv PATH "$S:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin" \
+        --setenv STUB_LOG "$R/systemctl.log" --setenv W "$W" --setenv SPA "$SPA" \
+        --setenv REAL_ROOT "$ROOT" --setenv ROUND "$1" \
+        bash "$W/scenario.sh" 2>&1
+}
+
+# compare <round>: what is new after it, and what is gone or changed
+compare() {
+    left=$(comm -13 <(sort "$W/$1/before") <(sort "$W/$1/after"))
+    gone=$(comm -23 <(sort "$W/$1/before") <(sort "$W/$1/after"))
+}
+show() {
+    # show <label> <lines>
+    [ -n "$2" ] && printf '%s\n' "$2" \
+        | sed "s|$W/[a-z]*/home|~|; s|$W/[a-z]*/run-user|\$XDG_RUNTIME_DIR|; s/^/       $1 /"
+    return 0
+}
+# a round that did not finish is the only finding worth reading
+ran() {
+    check "the sandbox ran the whole round" 0 "$1"
+    [ "$1" = 0 ] && return 0
+    printf '%s\n' "$out" | sed 's/^/       /'
+    summary
+    exit
+}
+
+echo "-- a phone as shipped: install, use, uninstall, in a sandbox"
+out=$(round shipped)
+ran $?
 
 # Not vacuous: something has to have been installed and written for the
 # comparison below to mean anything.
 check "install.sh put audioctl in place" yes \
-    "$(grep -q ' /usr/local/bin/audioctl ' "$W/installed" && echo yes || echo no)"
+    "$(grep -q ' /usr/local/bin/audioctl ' "$W/shipped/installed" && echo yes || echo no)"
 check "and audioctl wrote under \$HOME" yes \
-    "$(grep -q "$W/home/.config/systemd/user" "$W/used" && echo yes || echo no)"
+    "$(grep -q "$W/shipped/home/.config/systemd/user" "$W/shipped/used" && echo yes || echo no)"
+check "and the install took a record" yes \
+    "$(grep -q ' /var/lib/furios-audio-original/meta/etc/systemd/user/furios-audio-apply.service.@ ' \
+        "$W/shipped/installed" && echo yes || echo no)"
 
-left=$(comm -13 <(sort "$W/before") <(sort "$W/after"))
-gone=$(comm -23 <(sort "$W/before") <(sort "$W/after"))
+compare shipped
 check "nothing install or use created is left behind" 0 "$(printf '%s' "$left" | grep -c .)"
-[ -n "$left" ] && printf '%s\n' "$left" | sed "s|$W/home|~|; s|$W/run-user|\$XDG_RUNTIME_DIR|; s/^/       left: /"
+show "left:" "$left"
 check "nothing that was there before is gone or changed" 0 "$(printf '%s' "$gone" | grep -c .)"
-[ -n "$gone" ] && printf '%s\n' "$gone" | sed "s|$W/home|~|; s|$W/run-user|\$XDG_RUNTIME_DIR|; s/^/       was:  /"
+show "was: " "$gone"
+
+echo
+echo "-- a phone somebody has made their own, installed twice"
+out=$(round modified)
+ran $?
+compare modified
+# Exactly one difference is expected: the drop-in the user rewrote after the
+# install. It is theirs now, and the uninstall has to say so.
+ours=/etc/systemd/system/ofono.service.d/30-furios-audio-hfp.conf
+check "only the file the user changed after us is new" "$ours" \
+    "$(printf '%s\n' "$left" | grep . | awk '{print $2}' | paste -sd' ' -)"
+check "and the uninstall said it left it alone" yes \
+    "$(grep -q "left alone - changed since furios_audio wrote it: $ours" "$W/modified/uninstall.log" \
+       && echo yes || echo no)"
+check "everything else is exactly as before - put back, not guessed" 0 "$(printf '%s' "$gone" | grep -c .)"
+show "was: " "$gone"
+show "left:" "$(printf '%s\n' "$left" | grep -v " $ours ")"
+
+echo
+echo "-- a phone an older version set up, without a record"
+out=$(round norecord)
+ran $?
+compare norecord
+check "the uninstall says there is no record, for the system" yes \
+    "$(grep -q '^No record of the system files' "$W/norecord/uninstall.log" && echo yes || echo no)"
+check "and for the user's own files" yes \
+    "$(grep -q '^No record of your own files' "$W/norecord/uninstall.log" && echo yes || echo no)"
+check "and still leaves nothing behind" 0 "$(printf '%s' "$left" | grep -c .)"
+show "left:" "$left"
+check "and takes nothing that was there" 0 "$(printf '%s' "$gone" | grep -c .)"
+show "was: " "$gone"
 
 summary
