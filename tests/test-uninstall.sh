@@ -44,6 +44,16 @@ mkdir -p "$W/etc-systemd" "$W/usr-local" "$W/var-lib" "$W/spa" "$W/run-user" \
          "$W/home/.config" "$W/home/.local/share" "$W/home/.local/state" "$W/home/.cache"
 chmod 700 "$W/run-user"
 cp -a /etc/systemd/. "$W/etc-systemd/" 2>/dev/null
+# ...but without this repo: on the phone this runs on, it is usually
+# installed, and "before" was then a phone with furios_audio on it. The
+# uninstall took those files away and the check below counted each of them
+# as something lost - 13 findings that were the test's, not the scripts'.
+rm -rf "$W/etc-systemd/system/furios-audio-dmnr.service" \
+       "$W/etc-systemd/system/multi-user.target.wants/furios-audio-dmnr.service" \
+       "$W/etc-systemd/system/ofono.service.d/30-furios-audio-hfp.conf" \
+       "$W/etc-systemd/user/wireplumber.service.d/furios-bluez5-fix.conf" \
+       "$W/etc-systemd/user"/furios-audio-*.service "$W/etc-systemd/user/furios-pw-tunnel.service"
+rmdir "$W/etc-systemd/system/ofono.service.d" "$W/etc-systemd/user/wireplumber.service.d" 2>/dev/null
 # /usr/local as a new phone has it: the standard directories and nothing in them.
 for d in /usr/local/*/; do mkdir -p "$W/usr-local/$(basename "$d")"; done
 # PipeWire's plugins, without what we would have put there: the droid plugin
@@ -55,7 +65,10 @@ rm -rf "$W/spa/droid" "$W/spa/bluez5/libspa-codec-bluez5-aac.so" "$W/spa/bluez5/
 # built here, that is a job of minutes and a network. A stand-in file is enough:
 # what matters is where it goes and that it goes again.
 mkdir -p "$W/repo"
-(cd "$ROOT" && git ls-files -z | xargs -0 cp --parents -t "$W/repo")
+# New files too: a file not yet added to git is part of the tree being tested,
+# and without it the sandbox ran a tree that could not exist anywhere.
+(cd "$ROOT" && git ls-files -z --cached --others --exclude-standard \
+    | xargs -0 cp --parents -t "$W/repo")
 cat > "$W/repo/tools/build-plugin.sh" <<'EOF'
 #!/bin/sh
 cd "$(dirname "$0")/.." && mkdir -p poc/spa-droid/build && : > poc/spa-droid/build/libspa-droid.so
