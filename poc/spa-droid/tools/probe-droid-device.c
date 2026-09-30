@@ -20,7 +20,7 @@ SPA_LOG_IMPL(default_log);
 static void on_info(void *data, const struct spa_device_info *info)
 {
 	uint32_t i;
-	printf("Device-Info:\n");
+	printf("Device info:\n");
 	if (info->props)
 		for (i = 0; i < info->props->n_items; i++)
 			printf("   %-24s = %s\n", info->props->items[i].key,
@@ -32,10 +32,10 @@ static void on_object_info(void *data, uint32_t id,
 {
 	uint32_t i;
 	int *count = data;
-	if (!info) { printf("Objekt %u entfernt\n", id); return; }
+	if (!info) { printf("Object %u removed\n", id); return; }
 	(*count)++;
-	printf("\nObjekt %u  type=%s  factory=%s\n", id,
-			info->type ? info->type : "(keiner)",
+	printf("\nObject %u  type=%s  factory=%s\n", id,
+			info->type ? info->type : "(none)",
 			info->factory_name ? info->factory_name : "(none)");
 	if (info->props)
 		for (i = 0; i < info->props->n_items; i++)
@@ -93,7 +93,7 @@ int main(int argc, char **argv)
 		if (r == 0) {
 			void *iface = NULL;
 			r = spa_handle_get_interface(h, SPA_TYPE_INTERFACE_Node, &iface);
-			printf("   Node-Interface: %s\n", r == 0 && iface ? "vorhanden" : "FEHLT");
+			printf("   Node interface: %s\n", r == 0 && iface ? "present" : "MISSING");
 			spa_handle_clear(h);
 		}
 		free(h);
@@ -110,7 +110,7 @@ int main(int argc, char **argv)
 
 	handle = calloc(1, factory->get_size(factory, NULL));
 	if ((res = factory->init(factory, handle, NULL, support, 1)) < 0) {
-		fprintf(stderr, "init fehlgeschlagen: %d\n", res);
+		fprintf(stderr, "init failed: %d\n", res);
 		return 1;
 	}
 	if ((res = spa_handle_get_interface(handle, SPA_TYPE_INTERFACE_Device,
@@ -122,7 +122,7 @@ int main(int argc, char **argv)
 	spa_zero(listener);
 	spa_device_add_listener(device, &listener, &device_events, &count);
 
-	printf("\n=> %d Knoten gemeldet\n", count);
+	printf("\n=> %d nodes announced\n", count);
 
 	spa_hook_remove(&listener);
 	spa_handle_clear(handle);

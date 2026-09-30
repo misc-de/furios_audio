@@ -41,9 +41,9 @@ int main(int argc, char **argv) {
     dm_config_module *m;
     void *mstate = NULL;
 
-    printf("Datei: %s\n\n", fn);
+    printf("File: %s\n\n", fn);
     if (!(config = pa_parse_droid_audio_config(fn))) {
-        fprintf(stderr, "Parsen fehlgeschlagen.\n");
+        fprintf(stderr, "Parsing failed.\n");
         return 1;
     }
 
@@ -51,9 +51,9 @@ int main(int argc, char **argv) {
          m = dm_list_next_data(config->modules, &mstate)) {
         void *s = NULL;
         dm_config_port *p;
-        printf("Modul: %s (HAL-Version %d.%d)\n", m->name, m->version_major, m->version_minor);
-        printf("  Standard-Ausgabegeraet: %s\n",
-               m->default_output_device ? m->default_output_device->name : "(keins)");
+        printf("Module: %s (HAL version %d.%d)\n", m->name, m->version_major, m->version_minor);
+        printf("  Default output device: %s\n",
+               m->default_output_device ? m->default_output_device->name : "(none)");
 
         printf("  mixPorts (%zd):\n", (ssize_t) dm_list_size(m->mix_ports));
         for (p = dm_list_first_data(m->mix_ports, &s); p; p = dm_list_next_data(m->mix_ports, &s))
@@ -64,7 +64,7 @@ int main(int argc, char **argv) {
         for (p = dm_list_first_data(m->device_ports, &s); p; p = dm_list_next_data(m->device_ports, &s))
             print_port(p);
 
-        printf("  Routen: %zd\n\n", (ssize_t) dm_list_size(m->routes));
+        printf("  Routes: %zd\n\n", (ssize_t) dm_list_size(m->routes));
     }
 
     dm_config_free(config);

@@ -71,7 +71,7 @@ sed "s|^PARAMDIR=.*|PARAMDIR=$TMP/param|" "$TOOL" > "$TMP/dmnr.sh"
 : > "$TMP/usip"
 chmod 0600 "$TMP/usip"
 MYGROUP=$(id -gn)
-lauf() {
+run_tool() {
     DMNR_RUNDIR="$TMP/run" DMNR_MARKER="$TMP/marker" DMNR_USIP="$TMP/usip" \
     DMNR_USIP_GROUP="$MYGROUP" DMNR_USIP_GROUP_OFF="$MYGROUP" \
         bash "$TMP/dmnr.sh" "$@" 2>&1
@@ -79,14 +79,14 @@ lauf() {
 
 # The app reads these two lines and shows four states from them. Both have to
 # be there, and on their own line, or it shows the wrong one.
-check "status reports whether it is on" "1" "$(lauf status | grep -c '^state=')"
-check "and whether it is remembered" "1" "$(lauf status | grep -c '^persistent=')"
-check "nothing remembered to begin with" "persistent=no" "$(lauf status | sed -n 2p)"
+check "status reports whether it is on" "1" "$(run_tool status | grep -c '^state=')"
+check "and whether it is remembered" "1" "$(run_tool status | grep -c '^persistent=')"
+check "nothing remembered to begin with" "persistent=no" "$(run_tool status | sed -n 2p)"
 
 # The boot unit runs this on every boot, on every device. Without a marker it
 # has to be a no-op that succeeds - a failure here would show up as a failed
 # unit on a phone where nobody ever asked for echo suppression.
-lauf boot >/dev/null 2>&1
+run_tool boot >/dev/null 2>&1
 check "boot without a marker does nothing, successfully" "0" "$?"
 check "and lays nothing over the files" "no" \
     "$(ls "$TMP/run" 2>/dev/null | grep -q . && echo yes || echo no)"
@@ -96,15 +96,15 @@ check "and lays nothing over the files" "no" \
 # AudioParamOptions_vext.xml, and the switch in the app did nothing that could
 # be heard. Both files have to be seen, and a half state has to say off.
 check "every options file the parser reads is seen" "2" \
-    "$(lauf status | grep -c '^file:')"
+    "$(run_tool status | grep -c '^file:')"
 check "the vendor extension is one of them" "1" \
-    "$(lauf status | grep -c 'AudioParamOptions_vext.xml')"
-check "with nothing laid over, that is off" "state=off" "$(lauf status | sed -n 1p)"
+    "$(run_tool status | grep -c 'AudioParamOptions_vext.xml')"
+check "with nothing laid over, that is off" "state=off" "$(run_tool status | sed -n 1p)"
 check "the switch for a call held to the ear is set too" "yes" \
     "$(grep -q 'MTK_INCALL_NORMAL_DMNR' "$TOOL" && echo yes || echo no)"
 
 touch "$TMP/marker"
-check "a marker is seen" "persistent=yes" "$(lauf status | sed -n 2p)"
+check "a marker is seen" "persistent=yes" "$(run_tool status | sed -n 2p)"
 
 # "off" is for now and "set off" is for good. If "off" dropped the marker, the
 # two would be the same command and the distinction the app relies on would
@@ -112,12 +112,12 @@ check "a marker is seen" "persistent=yes" "$(lauf status | sed -n 2p)"
 check "'off' leaves the marker alone" "yes" \
     "$([ -e "$TMP/marker" ] && echo yes || echo no)"
 check "and says the reboot will bring it back" "1" \
-    "$(lauf off | grep -c 'comes back at the next boot')"
+    "$(run_tool off | grep -c 'comes back at the next boot')"
 
 check "an unknown word is refused" "1" \
-    "$(lauf quatsch >/dev/null 2>&1; echo $?)"
+    "$(run_tool nonsense >/dev/null 2>&1; echo $?)"
 check "and 'set' without on/off too" "1" \
-    "$(lauf set >/dev/null 2>&1; echo $?)"
+    "$(run_tool set >/dev/null 2>&1; echo $?)"
 
 # The copy is rebuilt from the vendor original every time, into a root-owned
 # directory on tmpfs. It used to be written into /var/lib/furios-audio, which
@@ -127,7 +127,7 @@ check "and 'set' without on/off too" "1" \
 check "the copy is built in /run, not somewhere this user owns" "yes" \
     "$(grep -q 'RUNDIR=${DMNR_RUNDIR:-/run/' "$TOOL" && echo yes || echo no)"
 check "and always rebuilt from the vendor file, never reused" "yes" \
-    "$(grep -q 'baue_kopie()' "$TOOL" && grep -q 'einschalten()' "$TOOL" && echo yes || echo no)"
+    "$(grep -q 'build_copy()' "$TOOL" && grep -q 'turn_on()' "$TOOL" && echo yes || echo no)"
 check "the marker lives where this user cannot write it" "yes" \
     "$(grep -q 'MARKER=${DMNR_MARKER:-/etc/' "$TOOL" && echo yes || echo no)"
 check "as root the overrides are refused" "yes" \
@@ -162,25 +162,25 @@ fi
 # which the kernel creates root-only; PipeWire runs as the phone's user, so
 # every call ran on the modem's defaults whatever the files said (HAL log,
 # 2026-09-26: "open(/dev/usip) fail, errno: 13").
-lauf off >/dev/null
+run_tool off >/dev/null
 chmod 0600 "$TMP/usip"
-lauf on >/dev/null
+run_tool on >/dev/null
 check "on opens the modem's tuning memory to the audio group" "660" \
     "$(stat -c %a "$TMP/usip")"
 check "and status says the tuning reaches the modem" "yes" \
-    "$(lauf status | grep -q '^usip: .*reaches the modem' && echo yes || echo no)"
-lauf off >/dev/null
+    "$(run_tool status | grep -q '^usip: .*reaches the modem' && echo yes || echo no)"
+run_tool off >/dev/null
 check "off closes it again, as the kernel made it" "600" \
     "$(stat -c %a "$TMP/usip")"
 check "and status says the HAL cannot hand it over" "yes" \
-    "$(lauf status | grep -q '^usip: .*closed' && echo yes || echo no)"
+    "$(run_tool status | grep -q '^usip: .*closed' && echo yes || echo no)"
 check "the boot unit opens it too when the setting is remembered" "660" \
-    "$(touch "$TMP/marker"; lauf boot >/dev/null; stat -c %a "$TMP/usip")"
+    "$(touch "$TMP/marker"; run_tool boot >/dev/null; stat -c %a "$TMP/usip")"
 rm -f "$TMP/marker"
-lauf off >/dev/null
+run_tool off >/dev/null
 mv "$TMP/usip" "$TMP/usip.away"
 check "a device without it is told so, not failed" "yes" \
-    "$(lauf status | grep -q '^usip: .*not present' && echo yes || echo no)"
+    "$(run_tool status | grep -q '^usip: .*not present' && echo yes || echo no)"
 mv "$TMP/usip.away" "$TMP/usip"
 check "as root the device path cannot be moved" "3" \
     "$(grep -q 'DMNR_USIP DMNR_USIP_GROUP DMNR_USIP_GROUP_OFF' "$TOOL" && echo 3 || echo 0)"
@@ -198,7 +198,7 @@ cp "$TMP/bin/sudo" "$TMP/bin/sudo-works"
 cp "$TMP/bin/sudo-refuses" "$TMP/bin/sudo"
 : > "$TMP/calls"
 chmod 0600 "$TMP/usip"
-out=$(lauf on; echo "rc=$?")
+out=$(run_tool on; echo "rc=$?")
 cp "$TMP/bin/sudo-works" "$TMP/bin/sudo"
 check "without a way to ask, on fails" "yes" \
     "$(printf '%s' "$out" | grep -q 'rc=1' && echo yes || echo no)"

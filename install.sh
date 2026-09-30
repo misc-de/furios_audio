@@ -36,7 +36,7 @@ cd "$(dirname "$0")"
 # than built from the program name: a name that only exists as a shell
 # variable cannot be grepped for, and tests/test-install.sh compares these
 # three scripts by reading them.
-WERKZEUGE=(
+TOOLS=(
     "furios-audio-pause-on-disconnect.service tools/furios-audio-pause-on-disconnect.py"
     "furios-audio-callaudio-refresh.service   tools/furios-audio-callaudio-refresh"
     "furios-audio-sco-hold.service            tools/furios-audio-sco-hold.py"
@@ -59,9 +59,9 @@ sudo install -m644 furios-audio-verify.service /etc/systemd/user/furios-audio-ve
 # somebody's pocket, and the routing refresh callaudiod needs. audioctl
 # enables each of them itself when a profile is applied - but only if the file
 # is here, and until now it never was on a script install.
-for eintrag in "${WERKZEUGE[@]}"; do
+for entry in "${TOOLS[@]}"; do
     # shellcheck disable=SC2086
-    set -- $eintrag
+    set -- $entry
     unit=$1
     source_file=$2
     sudo install -m755 "$source_file" "/usr/local/bin/${unit%.service}"

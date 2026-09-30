@@ -460,7 +460,7 @@ static int hal_open_output(struct impl *this)
 	if (!pa_droid_stream_is_primary(this->stream))
 		DIAG(this, "not the primary stream - the primary one does the routing");
 	else if (pa_droid_stream_set_route(this->stream, dev) < 0)
-		spa_log_warn(this->log, NAME " Routing auf \"%s\" failed", dev->name);
+		spa_log_warn(this->log, NAME " routing to \"%s\" failed", dev->name);
 	else
 		DIAG(this, "routing set: %s", dev->name);
 

@@ -8,7 +8,7 @@
 #include <stdio.h>
 #include <stdint.h>
 #include "pulsecore/macro.h"
-/* Im spaeteren SPA-Plugin auf spa_log_* umbiegen. */
+/* To be redirected to spa_log_* in the SPA plugin later. */
 #define PA_LOG_DEBUG 0
 #define PA_LOG_INFO  1
 #define PA_LOG_NOTICE 2

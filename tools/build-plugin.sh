@@ -17,7 +17,7 @@ cd "$(dirname "$0")/.."
 # What the build needs, by package name. Checked by name rather than by
 # building and reading the error: meson's message for a missing header is a
 # page long and names a header, never a package.
-PAKETE=(meson ninja-build build-essential pkg-config libexpat1-dev
+PACKAGES=(meson ninja-build build-essential pkg-config libexpat1-dev
         libspa-0.2-dev libpulse-dev libhybris-common-dev libhardware-dev
         libbluetooth-dev android-headers-30)
 
@@ -27,34 +27,34 @@ PAKETE=(meson ninja-build build-essential pkg-config libexpat1-dev
 # a question about somebody else's day.
 UPSTREAM=https://github.com/FuriLabs/pulseaudio-modules-droid-modern
 COMMIT=d0e2330
-QUELLEN=src/pulseaudio-modules-droid-modern
+SOURCES=src/pulseaudio-modules-droid-modern
 BUILD=poc/spa-droid/build
 PLUGIN=$BUILD/libspa-droid.so
 
 echo "   packages the build needs"
-fehlt=()
-for p in "${PAKETE[@]}"; do
+missing=()
+for p in "${PACKAGES[@]}"; do
     if ! dpkg-query -W -f='${Status}' "$p" 2>/dev/null | grep -q "^install ok installed$"; then
-        fehlt+=("$p")
+        missing+=("$p")
     fi
 done
-if [ ${#fehlt[@]} -eq 0 ]; then
+if [ ${#missing[@]} -eq 0 ]; then
     echo "      all present"
 else
-    echo "      installing ${fehlt[*]}"
+    echo "      installing ${missing[*]}"
     # A stale package index is the ordinary reason the first attempt fails on
     # a phone that has not seen "apt update" in weeks, so try again after one.
-    sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends "${fehlt[@]}" \
+    sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends "${missing[@]}" \
         || { sudo apt-get update
-             sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends "${fehlt[@]}"; }
+             sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends "${missing[@]}"; }
 fi
 
 echo "   upstream droid sources"
-if [ -d "$QUELLEN/src/common" ]; then
+if [ -d "$SOURCES/src/common" ]; then
     echo "      already here - left exactly as they are"
 else
-    git clone "$UPSTREAM" "$QUELLEN"
-    git -C "$QUELLEN" checkout --quiet "$COMMIT"
+    git clone "$UPSTREAM" "$SOURCES"
+    git -C "$SOURCES" checkout --quiet "$COMMIT"
     echo "      cloned at $COMMIT"
 fi
 

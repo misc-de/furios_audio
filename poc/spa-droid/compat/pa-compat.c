@@ -32,7 +32,7 @@ char *pa_split_spaces(const char *c, const char **state) {
     return pa_xstrndup(current, l);
 }
 
-/* --- pa_strbuf: einfacher dynamischer Puffer --- */
+/* --- pa_strbuf: simple dynamic buffer --- */
 struct pa_strbuf { char *data; size_t len, alloc; };
 
 pa_strbuf *pa_strbuf_new(void) {
@@ -74,7 +74,7 @@ char *pa_replace(const char *s, const char *a, const char *b) {
     return pa_strbuf_to_string_free(sb);
 }
 
-/* --- pa_modargs: minimal, spaeter durch spa_dict ersetzen --- */
+/* --- pa_modargs: minimal, to be replaced by spa_dict later --- */
 struct pa_modargs { char **keys; char **vals; unsigned n; };
 
 pa_modargs *pa_modargs_new(const char *args, const char* const keys[]) {

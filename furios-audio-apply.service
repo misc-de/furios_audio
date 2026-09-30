@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 misc-de
 # SPDX-License-Identifier: MIT
 [Unit]
-Description=FuriOS Audio: gespeichertes Profil anwenden (Sicherheitsnetz)
+Description=FuriOS Audio: apply the stored profile (safety net)
 # Runs before the sound stack so a test profile NEVER survives a reboot.
 Before=pulseaudio.service pipewire.service
 DefaultDependencies=no

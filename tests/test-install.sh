@@ -20,17 +20,17 @@ ROOT=$(dirname "$HERE")
 
 cd "$ROOT"
 
-enthalten() {
-    # enthalten <file> <word> -> "yes" / "no"
+contains() {
+    # contains <file> <word> -> "yes" / "no"
     if grep -q -- "$2" "$1"; then echo yes; else echo no; fi
 }
 
 echo "-- every unit in this repo is installed, removed and packaged"
 for unit in furios-*.service; do
     name=${unit%.service}
-    check "install.sh installs $name"   yes "$(enthalten install.sh "$unit")"
-    check "uninstall.sh removes $name"  yes "$(enthalten uninstall.sh "$unit")"
-    check "the package ships $name"     yes "$(enthalten packaging/build-deb.sh "$unit")"
+    check "install.sh installs $name"   yes "$(contains install.sh "$unit")"
+    check "uninstall.sh removes $name"  yes "$(contains uninstall.sh "$unit")"
+    check "the package ships $name"     yes "$(contains packaging/build-deb.sh "$unit")"
 done
 
 echo
@@ -53,9 +53,9 @@ check "and before anything at all is installed" "yes" \
         "$ROOT/install.sh")"
 
 for prog in $programme; do
-    check "install.sh installs $prog"  yes "$(enthalten install.sh "$prog")"
-    check "uninstall.sh removes $prog" yes "$(enthalten uninstall.sh "$prog")"
-    check "the package ships $prog"    yes "$(enthalten packaging/build-deb.sh "$prog")"
+    check "install.sh installs $prog"  yes "$(contains install.sh "$prog")"
+    check "uninstall.sh removes $prog" yes "$(contains uninstall.sh "$prog")"
+    check "the package ships $prog"    yes "$(contains packaging/build-deb.sh "$prog")"
 done
 
 # A unit is copied as it is into both installs, so a path under /usr/local in
@@ -75,17 +75,17 @@ echo
 echo "-- every WirePlumber script is installed, removed and packaged"
 for lua in wireplumber/*.lua wireplumber/*.conf; do
     name=$(basename "$lua")
-    check "install-hal.sh installs $name" yes "$(enthalten install-hal.sh "$name")"
-    check "uninstall.sh removes $name"    yes "$(enthalten uninstall.sh "$name")"
-    check "the package ships $name"       yes "$(enthalten packaging/build-deb.sh "$name")"
+    check "install-hal.sh installs $name" yes "$(contains install-hal.sh "$name")"
+    check "uninstall.sh removes $name"    yes "$(contains uninstall.sh "$name")"
+    check "the package ships $name"       yes "$(contains packaging/build-deb.sh "$name")"
 done
 
 echo
 echo "-- the WirePlumber drop-in and the helper it starts"
 for name in furios-bluez5-fix.conf furios-audio-bluez5-fix; do
-    check "install-hal.sh installs $name" yes "$(enthalten install-hal.sh "$name")"
-    check "uninstall.sh removes $name"    yes "$(enthalten uninstall.sh "$name")"
-    check "the package ships $name"       yes "$(enthalten packaging/build-deb.sh "$name")"
+    check "install-hal.sh installs $name" yes "$(contains install-hal.sh "$name")"
+    check "uninstall.sh removes $name"    yes "$(contains uninstall.sh "$name")"
+    check "the package ships $name"       yes "$(contains packaging/build-deb.sh "$name")"
 done
 check "both fill in the architecture" yes \
     "$(grep -q '@TRIPLET@' install-hal.sh && grep -q '@TRIPLET@' packaging/build-deb.sh \
@@ -93,10 +93,10 @@ check "both fill in the architecture" yes \
 
 echo
 echo "-- the one entry point does the whole job"
-check "install.sh builds the plugin" yes "$(enthalten install.sh build-plugin.sh)"
-check "install.sh installs the HAL side" yes "$(enthalten install.sh install-hal.sh)"
+check "install.sh builds the plugin" yes "$(contains install.sh build-plugin.sh)"
+check "install.sh installs the HAL side" yes "$(contains install.sh install-hal.sh)"
 check "the plugin build pins its upstream commit" yes \
-    "$(enthalten tools/build-plugin.sh 'COMMIT=')"
+    "$(contains tools/build-plugin.sh 'COMMIT=')"
 # Nothing the package ships may come from a directory that is not here any
 # more: that is how build-deb.sh broke without anybody noticing.
 missing=0

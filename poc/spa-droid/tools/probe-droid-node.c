@@ -101,12 +101,12 @@ int main(int argc, char **argv)
 		printf("   -> %d (%s)\n", res, res < 0 ? spa_strerror(res) : "ok");
 	}
 
-	printf("port_enum_params(Buffers) nach Format ...\n"); fflush(stdout);
+	printf("port_enum_params(Buffers) after Format ...\n"); fflush(stdout);
 	res = spa_node_port_enum_params(node, 0, SPA_DIRECTION_INPUT, 0,
 			SPA_PARAM_Buffers, 0, 4, NULL);
 	printf("   -> %d (%s)\n", res, res < 0 ? spa_strerror(res) : "ok");
 
-	printf("\nAlles ueberstanden, %d Ergebnisse. HAL wurde nie geoeffnet.\n", count);
+	printf("\nSurvived all of it, %d results. The HAL was never opened.\n", count);
 	spa_handle_clear(h);
 	free(h);
 	return 0;

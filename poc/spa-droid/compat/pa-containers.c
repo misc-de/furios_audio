@@ -90,7 +90,7 @@ int pa_hashmap_put(pa_hashmap *h, void *key, void *value) {
     unsigned b;
     struct hm_entry *e;
     if (!h) return -1;
-    if (hm_find(h, key, &b)) return -1;      /* Schluessel existiert bereits */
+    if (hm_find(h, key, &b)) return -1;      /* key already exists */
     e = pa_xnew0(struct hm_entry, 1);
     e->key = key; e->value = value;
     e->next = h->buckets[b];
@@ -263,7 +263,7 @@ void pa_mutex_lock(pa_mutex *m)  { pthread_mutex_lock(&m->m); }
 void pa_mutex_unlock(pa_mutex *m){ pthread_mutex_unlock(&m->m); }
 bool pa_mutex_try_lock(pa_mutex *m) { return pthread_mutex_trylock(&m->m) == 0; }
 
-/* ---------------- pa_shared: prozessweite Registry ---------------- */
+/* ---------------- pa_shared: process-wide registry ---------------- */
 
 static pa_hashmap *shared_map;
 

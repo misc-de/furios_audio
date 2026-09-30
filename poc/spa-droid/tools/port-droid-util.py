@@ -14,12 +14,12 @@ import sys
 
 # Whole functions that dereference PA graph objects.
 EXCLUDE_FUNCS = [
-    "add_ports",                  # legt pa_device_port an
+    "add_ports",                  # creates a pa_device_port
     "pa_droid_add_ports",         # card->core, card->ports
     "pa_droid_add_card_ports",    # pa_card_profile
     "update_sink_types",          # sink->...
-    "sink_put_hook_cb",           # PA-Hook-Callback
-    "sink_unlink_hook_cb",        # PA-Hook-Callback
+    "sink_put_hook_cb",           # PA hook callback
+    "sink_unlink_hook_cb",        # PA hook callback
     "pa_source_is_droid_source",  # source->proplist
     "pa_sink_is_droid_sink",      # sink->proplist
 ]
@@ -84,7 +84,7 @@ def main():
 
     for old, new in REPLACEMENTS:
         if old not in text:
-            missing.append("<Anweisungsblock>")
+            missing.append("<statement block>")
             continue
         text = text.replace(old, new, 1)
 
@@ -99,7 +99,7 @@ def main():
         " * Do NOT edit by hand. */\n" % src
     )
     open(dst, "w").write(header + text)
-    print("%s -> %s (%d Funktionen ausgeschlossen)" % (src, dst, len(EXCLUDE_FUNCS)))
+    print("%s -> %s (%d functions excluded)" % (src, dst, len(EXCLUDE_FUNCS)))
     return 0
 
 

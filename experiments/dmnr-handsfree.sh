@@ -98,8 +98,8 @@ USIP_GROUP_OFF=${DMNR_USIP_GROUP_OFF:-root}
 # every other one is "no", which is exactly the shape of "a call held to the
 # ear is fine, the speakerphone echoes". Both names are set, because which of
 # them the HAL asks is not something this file can decide.
-SCHALTER='MTK_INCALL_HANDSFREE_DMNR|MTK_INCALL_NORMAL_DMNR|MTK_VOIP_HANDSFREE_DMNR|MTK_VOIP_NORMAL_DMNR|VIR_INCALL_HANDSFREE_DMNR_SUPPORT|VIR_INCALL_NORMAL_DMNR_SUPPORT|VIR_VOIP_HANDSFREE_DMNR_SUPPORT|VIR_VOIP_NORMAL_DMNR_SUPPORT'
-ZEIGEN="$SCHALTER|MTK_HANDSFREE_DMNR_SUPPORT|MTK_DUAL_MIC_SUPPORT|MTK_AUDIO_NUMBER_OF_MIC"
+SWITCHES='MTK_INCALL_HANDSFREE_DMNR|MTK_INCALL_NORMAL_DMNR|MTK_VOIP_HANDSFREE_DMNR|MTK_VOIP_NORMAL_DMNR|VIR_INCALL_HANDSFREE_DMNR_SUPPORT|VIR_INCALL_NORMAL_DMNR_SUPPORT|VIR_VOIP_HANDSFREE_DMNR_SUPPORT|VIR_VOIP_NORMAL_DMNR_SUPPORT'
+SHOWN_KEYS="$SWITCHES|MTK_HANDSFREE_DMNR_SUPPORT|MTK_DUAL_MIC_SUPPORT|MTK_AUDIO_NUMBER_OF_MIC"
 
 # As root an override that moves where this reads or writes would be a way of
 # mounting anything over a vendor file at boot. The tests need them and
@@ -116,7 +116,7 @@ fi
 # Every options file the parser reads, in the order it names them. Missing
 # ones are not an error: _mgvi does not exist on this device, and a device
 # with only the base file is just as valid.
-dateien() {
+option_files() {
     local f
     for f in "$PARAMDIR"/AudioParamOptions.xml \
              "$PARAMDIR"/AudioParamOptions_vext.xml \
@@ -126,9 +126,9 @@ dateien() {
     return 0
 }
 
-kopie_von() { printf '%s/%s.dmnr.xml\n' "$RUNDIR" "$(basename "$1" .xml)"; }
+copy_of() { printf '%s/%s.dmnr.xml\n' "$RUNDIR" "$(basename "$1" .xml)"; }
 
-ist_gemountet() { grep -q " $1 " /proc/mounts 2>/dev/null; }
+is_mounted() { grep -q " $1 " /proc/mounts 2>/dev/null; }
 
 # The copies are built here and nowhere else, always from the vendor original,
 # into a root-owned directory on tmpfs. Never from a file left lying around:
@@ -138,13 +138,13 @@ ist_gemountet() { grep -q " $1 " /proc/mounts 2>/dev/null; }
 # the vext file carries MTK_INCALL_NORMAL_DMNR with an empty value, which is
 # off as surely as "no" is, and a file that is already right simply comes out
 # unchanged - which is how "nothing to do" is decided one line further down.
-baue_kopie() {
+build_copy() {
     local orig="$1" copy
-    copy=$(kopie_von "$orig")
+    copy=$(copy_of "$orig")
     [ -r "$orig" ] || return 1
     sudo mkdir -p "$RUNDIR"
     sudo chmod 0755 "$RUNDIR"
-    sed -E 's@(<Param name="('"$SCHALTER"')" value=")[^"]*"@\1yes"@g' \
+    sed -E 's@(<Param name="('"$SWITCHES"')" value=")[^"]*"@\1yes"@g' \
         "$orig" | sudo tee "$copy" >/dev/null
     if sudo cmp -s "$orig" "$copy"; then
         sudo rm -f "$copy"
@@ -156,51 +156,51 @@ baue_kopie() {
 # True while any file still has a switch that is off. Once a copy is mounted
 # the file reads "yes" through the mount, so this is also what says whether
 # turning it on is finished.
-offen() {
+any_switch_off() {
     local f
-    for f in $(dateien); do
-        grep -qE '<Param name="('"$SCHALTER"')" value="(no)?"' "$f" && return 0
+    for f in $(option_files); do
+        grep -qE '<Param name="('"$SWITCHES"')" value="(no)?"' "$f" && return 0
     done
     return 1
 }
 
 # The modem's speech tuning memory. A device without it has nothing to open and
 # counts as open, so that it cannot hold the switch at "off" forever.
-usip_offen() {
+usip_open() {
     [ -e "$USIP" ] || return 0
     [ "$(stat -c '%G %a' "$USIP" 2>/dev/null)" = "$USIP_GROUP 660" ]
 }
 
 # Both return true only when they changed something.
-usip_freigeben() {
+usip_grant() {
     [ -e "$USIP" ] || return 1
-    usip_offen && return 1
+    usip_open && return 1
     sudo chgrp "$USIP_GROUP" "$USIP"
     sudo chmod 0660 "$USIP"
 }
 
-usip_sperren() {
+usip_close() {
     [ -e "$USIP" ] || return 1
-    usip_offen || return 1
+    usip_open || return 1
     sudo chmod 0600 "$USIP"
     sudo chgrp "$USIP_GROUP_OFF" "$USIP"
 }
 
-gemountete() {
+mounted_count() {
     local f n=0
-    for f in $(dateien); do
-        ist_gemountet "$f" && n=$((n + 1))
+    for f in $(option_files); do
+        is_mounted "$f" && n=$((n + 1))
     done
     printf '%s\n' "$n"
 }
 
 show() {
     local f n
-    n=$(gemountete)
+    n=$(mounted_count)
     # First line deliberately machine-readable - the switcher app reads it.
     # A half state is not "on": it is what the base-file-only version of this
     # script left behind, and it sounds exactly like off on a call.
-    if [ "$n" -gt 0 ] && ! offen && usip_offen; then
+    if [ "$n" -gt 0 ] && ! any_switch_off && usip_open; then
         printf 'state=on\n'
     else
         printf 'state=off\n'
@@ -214,50 +214,50 @@ show() {
     fi
     if [ ! -e "$USIP" ]; then
         printf 'usip:  %s not present - nothing to open\n' "$USIP"
-    elif usip_offen; then
+    elif usip_open; then
         printf 'usip:  %s open to group %s - the tuning reaches the modem\n' "$USIP" "$USIP_GROUP"
     else
         printf 'usip:  %s closed - the HAL cannot hand the tuning to the modem\n' "$USIP"
     fi
-    for f in $(dateien); do
+    for f in $(option_files); do
         printf 'file:  %s\n' "$f"
-        if ist_gemountet "$f"; then
+        if is_mounted "$f"; then
             printf 'state: modified copy is laid over it\n'
         else
             printf 'state: vendor original\n'
         fi
         printf 'current values:\n'
-        grep -oE '<Param name="('"$ZEIGEN"')" value="[^"]*"' "$f" \
+        grep -oE '<Param name="('"$SHOWN_KEYS"')" value="[^"]*"' "$f" \
             | sed 's/<Param name="/  /; s/" value="/ = /; s/"$//'
     done
 }
 
-einschalten() {
-    local f rc getan=0
-    usip_freigeben && getan=$((getan + 1))
-    for f in $(dateien); do
-        ist_gemountet "$f" && { getan=$((getan + 1)); continue; }
-        rc=0; baue_kopie "$f" || rc=$?
+turn_on() {
+    local f rc changed=0
+    usip_grant && changed=$((changed + 1))
+    for f in $(option_files); do
+        is_mounted "$f" && { changed=$((changed + 1)); continue; }
+        rc=0; build_copy "$f" || rc=$?
         case $rc in
-        0) sudo mount --bind "$(kopie_von "$f")" "$f"; getan=$((getan + 1)) ;;
+        0) sudo mount --bind "$(copy_of "$f")" "$f"; changed=$((changed + 1)) ;;
         2) : ;;                       # already says yes - leave it alone
         *) echo "tuning file not readable - wrong device?" >&2; return 1 ;;
         esac
     done
-    [ "$getan" -gt 0 ] || { echo "nothing to change - the switches are not off." >&2; return 1; }
+    [ "$changed" -gt 0 ] || { echo "nothing to change - the switches are not off." >&2; return 1; }
     return 0
 }
 
-ausschalten() {
-    local f getan=0
-    usip_sperren && getan=$((getan + 1))
-    for f in $(dateien); do
-        if ist_gemountet "$f"; then
+turn_off() {
+    local f changed=0
+    usip_close && changed=$((changed + 1))
+    for f in $(option_files); do
+        if is_mounted "$f"; then
             sudo umount "$f"
-            getan=$((getan + 1))
+            changed=$((changed + 1))
         fi
     done
-    [ "$getan" -gt 0 ]
+    [ "$changed" -gt 0 ]
 }
 
 # Ask sudo once, before anything is touched. Every step below has its own
@@ -276,7 +276,7 @@ status) show ;;
 
 on)
     root_first
-    einschalten || exit 1
+    turn_on || exit 1
     echo "Modified copies mounted. Restarting the audio stack so the HAL reads them:"
     audioctl restart >/dev/null 2>&1 || true
     echo
@@ -294,14 +294,14 @@ set)
     esac
     case "${2:-}" in
     on)
-        einschalten || exit 1
+        turn_on || exit 1
         printf 'on\n' | sudo tee "$MARKER" >/dev/null
         sudo chmod 0644 "$MARKER"
         audioctl restart >/dev/null 2>&1 || true
         echo "On, and remembered - the boot unit lays them over again."
         ;;
     off)
-        ausschalten || true
+        turn_off || true
         sudo rm -f "$MARKER"
         audioctl restart >/dev/null 2>&1 || true
         echo "Off, and remembered - nothing is laid over at boot."
@@ -316,12 +316,12 @@ boot)
     # cannot be put in place is not a reason to hold up the boot, and this
     # runs before anybody could be in a call anyway.
     [ -e "$MARKER" ] || exit 0
-    einschalten || exit 0
+    turn_on || exit 0
     ;;
 
 off)
     root_first
-    if ausschalten; then
+    if turn_off; then
         echo "Originals restored."
     else
         echo "Nothing was laid over them."
