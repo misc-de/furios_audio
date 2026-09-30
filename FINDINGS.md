@@ -541,8 +541,9 @@ set. One bit apart, and nothing in the code ever looked at it.
 The tests agreed with the code rather than with the phone: the CVSD branch was
 exercised with a profile named `headset-head-unit-cvsd`, and the case that
 actually occurs - the plain name on a narrow-band device - was the one nobody
-wrote down. Same shape as the modem's fault 12/16/21/22; see
-`arbeitsweise-invariante-vor-patch`.
+wrote down. Same shape as the modem's fault 12/16/21/22: when faults pile up
+in one place, write the rule down first and test it from outside - a test that
+shares the code's assumption never finds it.
 
 **What it reads now**, best source first:
 
