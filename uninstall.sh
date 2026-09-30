@@ -36,6 +36,10 @@ sudo rm -f /usr/local/bin/audioctl \
            /etc/systemd/user/furios-audio-bt-mic.service \
            /etc/systemd/user/furios-audio-bt-reconnect.service \
            /etc/systemd/user/pipewire.service.d/50-furios-audio.conf
+# An early .deb (13.9.2026) put the Bluetooth microphone helper under /usr;
+# that package is long gone from dpkg, its two files were not. Found on
+# 30.9.2026 in a clean-install test.
+sudo rm -f /usr/bin/furios-audio-bt-mic /usr/lib/systemd/user/furios-audio-bt-mic.service
 sudo rm -rf /usr/local/share/furios-audio /var/lib/furios-audio
 sudo rm -rf /usr/lib/aarch64-linux-gnu/spa-0.2/droid
 sudo rmdir /etc/systemd/user/pipewire.service.d 2>/dev/null || true
