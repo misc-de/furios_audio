@@ -58,6 +58,8 @@ install -Dm644 systemd/furios-audio-dmnr.service \
 # fdk-aac, and building it locally is a different thing from redistributing
 # it. The script that builds it comes along instead.
 install -Dm755 tools/build-bluez5-aac.sh      "$STAGE/usr/share/furios-audio/build-bluez5-aac.sh"
+# What it (and audioctl) record the original state with - see the file.
+install -Dm644 tools/original-state.sh        "$STAGE/usr/share/furios-audio/original-state.sh"
 install -Dm755 tools/furios-audio-pause-on-disconnect.py \
     "$STAGE/usr/bin/furios-audio-pause-on-disconnect"
 install -Dm755 tools/furios-audio-callaudio-refresh \
