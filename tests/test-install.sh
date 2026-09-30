@@ -112,8 +112,16 @@ missing=0
 while read -r source_file; do
     case "$source_file" in *'$'*) continue ;; esac
     [ -e "$source_file" ] || { missing=$((missing + 1)); echo "       not in this repo: $source_file"; }
-done < <(grep -hoE 'sudo install -[Dm0-9]+ +[^ "$]+' install.sh install-hal.sh | awk '{print $4}')
+done < <(grep -hoE 'sudo install -[Dm0-9]+ +[^ "$]+' install.sh install-hal.sh | awk '{print $4}'
+         grep -hoE '^ *orig_install [0-9]+ +[^ "$]+' install.sh install-hal.sh | awk '{print $3}')
 check "both install scripts copy only files that exist here" 0 "$missing"
+# And they do copy something - through orig_install, which records what was
+# there first. A plain "sudo install" would write without a record, and the
+# check above, which looks for either, would not notice the difference.
+check "no plain \"sudo install\" left - every write goes through the record" 0 \
+    "$(grep -hcE '^[^#]*sudo (install|tee|cp|ln) ' install.sh install-hal.sh | awk '{s+=$1} END {print s+0}')"
+check "and orig_install is what copies" yes \
+    "$([ "$(grep -hcE '^ *orig_install ' install.sh install-hal.sh | awk '{s+=$1} END {print s+0}')" -gt 20 ] && echo yes || echo no)"
 
 echo
 echo "-- the package's postinst does not write through a link it finds"

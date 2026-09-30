@@ -13,15 +13,23 @@ PLUGIN=poc/spa-droid/build/libspa-droid.so
 [ -f "$PLUGIN" ] || { echo "plugin missing - build it first: ninja -C poc/spa-droid/build"; exit 1; }
 command -v wireplumber >/dev/null || { echo "wireplumber missing - apt install wireplumber"; exit 1; }
 
+# What is there before the first write, kept for uninstall.sh - see
+# tools/original-state.sh. install.sh has usually set this up already; run on
+# its own this script needs it just the same.
+# shellcheck source=tools/original-state.sh
+. tools/original-state.sh
+orig_use_system
+
 echo "1) SPA plugin to $SPA_DIR"
-sudo mkdir -p "$SPA_DIR"
-sudo install -m644 "$PLUGIN" "$SPA_DIR/libspa-droid.so"
+orig_record_dir "$SPA_DIR" --ours-if-present
+orig_mkdir "$SPA_DIR"
+orig_install 644 "$PLUGIN" "$SPA_DIR/libspa-droid.so"
 
 # Record the PipeWire version this was built against. If an update breaks the
 # SPA interface, pw-hal would otherwise go silent without a word - audioctl
 # now warns beforehand.
 BUILT_AGAINST=$(pkg-config --modversion libpipewire-0.3 2>/dev/null || echo unknown)
-echo "$BUILT_AGAINST" | sudo tee "$SPA_DIR/built-against" >/dev/null
+echo "$BUILT_AGAINST" | orig_install_stdin 644 "$SPA_DIR/built-against"
 echo "   built against PipeWire $BUILT_AGAINST"
 
 echo "2) generating PipeWire configuration"
@@ -31,31 +39,32 @@ echo "2) generating PipeWire configuration"
 HALCONF=$(mktemp) || { echo "could not create a temporary file" >&2; exit 1; }
 trap 'rm -f "$HALCONF"' EXIT INT TERM
 ./gen-pipewire-hal-conf.py /usr/share/pipewire/pipewire-droid.conf "$HALCONF"
-sudo mkdir -p /usr/local/share/furios-audio
-sudo install -m644 "$HALCONF" /usr/local/share/furios-audio/pipewire-hal.conf
+orig_record_dir /usr/local/share/furios-audio --ours-if-present
+orig_mkdir /usr/local/share/furios-audio
+orig_install 644 "$HALCONF" /usr/local/share/furios-audio/pipewire-hal.conf
 rm -f "$HALCONF"
 trap - EXIT INT TERM
 
 echo "3) WirePlumber monitor"
-sudo mkdir -p /usr/local/share/wireplumber/scripts/monitors /usr/local/share/wireplumber/wireplumber.conf.d
-sudo install -m644 wireplumber/droid.lua /usr/local/share/wireplumber/scripts/monitors/droid.lua
-sudo install -m644 wireplumber/droid-input-follows-output.lua \
+orig_mkdir /usr/local/share/wireplumber/scripts/monitors /usr/local/share/wireplumber/wireplumber.conf.d
+orig_install 644 wireplumber/droid.lua /usr/local/share/wireplumber/scripts/monitors/droid.lua
+orig_install 644 wireplumber/droid-input-follows-output.lua \
     /usr/local/share/wireplumber/scripts/monitors/droid-input-follows-output.lua
-sudo install -m644 wireplumber/droid-default-sink-policy.lua \
+orig_install 644 wireplumber/droid-default-sink-policy.lua \
     /usr/local/share/wireplumber/scripts/monitors/droid-default-sink-policy.lua
-sudo install -m644 wireplumber/droid-bluetooth-call.lua \
+orig_install 644 wireplumber/droid-bluetooth-call.lua \
     /usr/local/share/wireplumber/scripts/monitors/droid-bluetooth-call.lua
-sudo install -m644 wireplumber/droid-bluetooth-codec.lua \
+orig_install 644 wireplumber/droid-bluetooth-codec.lua \
     /usr/local/share/wireplumber/scripts/monitors/droid-bluetooth-codec.lua
-sudo install -m644 wireplumber/50-droid.conf /usr/local/share/wireplumber/wireplumber.conf.d/50-droid.conf
-sudo install -m644 wireplumber/51-bluez-ofono.conf /usr/local/share/wireplumber/wireplumber.conf.d/51-bluez-ofono.conf
+orig_install 644 wireplumber/50-droid.conf /usr/local/share/wireplumber/wireplumber.conf.d/50-droid.conf
+orig_install 644 wireplumber/51-bluez-ofono.conf /usr/local/share/wireplumber/wireplumber.conf.d/51-bluez-ofono.conf
 
 # /etc and not /usr/local: systemd does not look under /usr/local at all, so a
 # drop-in placed there is simply never read. The package installs the same
 # file under /usr/lib, which is where a package's drop-ins belong; /etc is the
 # administrator's place and is what this script-driven install can use.
-sudo mkdir -p /etc/systemd/system/ofono.service.d
-sudo install -m644 systemd/ofono.service.d/30-furios-audio-hfp.conf \
+orig_mkdir /etc/systemd/system/ofono.service.d
+orig_install 644 systemd/ofono.service.d/30-furios-audio-hfp.conf \
     /etc/systemd/system/ofono.service.d/30-furios-audio-hfp.conf
 sudo systemctl daemon-reload
 
@@ -65,12 +74,11 @@ sudo systemctl daemon-reload
 # plugins - see tools/furios-audio-bluez5-fix.py. /etc for the drop-in, as
 # above: systemd never reads one under /usr/local.
 TRIPLET=$(dpkg-architecture -qDEB_HOST_MULTIARCH 2>/dev/null || echo aarch64-linux-gnu)
-sudo install -m755 tools/furios-audio-bluez5-fix.py /usr/local/bin/furios-audio-bluez5-fix
-sudo mkdir -p /etc/systemd/user/wireplumber.service.d
+orig_install 755 tools/furios-audio-bluez5-fix.py /usr/local/bin/furios-audio-bluez5-fix
+orig_mkdir /etc/systemd/user/wireplumber.service.d
 sed -e "s|^ExecStartPre=-/usr/bin/|ExecStartPre=-/usr/local/bin/|" -e "s|@TRIPLET@|$TRIPLET|" \
     systemd/wireplumber.service.d/furios-bluez5-fix.conf \
-    | sudo tee /etc/systemd/user/wireplumber.service.d/furios-bluez5-fix.conf >/dev/null
-sudo chmod 644 /etc/systemd/user/wireplumber.service.d/furios-bluez5-fix.conf
+    | orig_install_stdin 644 /etc/systemd/user/wireplumber.service.d/furios-bluez5-fix.conf
 systemctl --user daemon-reload
 # Not restarted here. ofono restarting takes the modem down for a moment, and
 # on this device it has come back Powered but Online: false - no network and
@@ -78,17 +86,23 @@ systemctl --user daemon-reload
 # after "sudo systemctl restart ofono" when somebody is watching.
 
 echo "4) echo experiment (DMNR)"
-sudo install -m755 experiments/dmnr-handsfree.sh /usr/local/bin/furios-audio-dmnr
+orig_install 755 experiments/dmnr-handsfree.sh /usr/local/bin/furios-audio-dmnr
 # The unit that puts it back after a reboot. Enabled unconditionally: it does
 # nothing at all unless "furios-audio-dmnr set on" has left its marker, so
 # enabling it costs a ConditionPathExists and one exit 0 per boot.
-sudo install -m644 systemd/furios-audio-dmnr.service \
+orig_install 644 systemd/furios-audio-dmnr.service \
     /etc/systemd/system/furios-audio-dmnr.service
 sudo systemctl daemon-reload
+# The want "enable" writes is a change like any other: recorded before, and
+# marked as ours after.
+orig_record_dir /etc/systemd/system/multi-user.target.wants
+orig_record /etc/systemd/system/multi-user.target.wants/furios-audio-dmnr.service --ours-if-present
 sudo systemctl enable furios-audio-dmnr.service >/dev/null 2>&1 || true
+orig_mark_ours /etc/systemd/system/multi-user.target.wants/furios-audio-dmnr.service
 
 echo "5) updating audioctl (plugin path)"
-sudo install -m755 audioctl /usr/local/bin/audioctl
+orig_install 755 audioctl /usr/local/bin/audioctl
+orig_install 644 tools/original-state.sh /usr/local/share/furios-audio/original-state.sh
 
 echo
 echo "Done. Active profile unchanged:"

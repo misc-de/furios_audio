@@ -93,9 +93,22 @@ echo "3) building the one module"
 ninja -C "$SRC/build-aac" spa/plugins/bluez5/libspa-codec-bluez5-aac.so
 
 echo "4) installing"
+# What was there before, for uninstall.sh - see original-state.sh. Next to
+# this script in the repo (tools/) and in the package (/usr/share/furios-audio).
+# A file found there is an older build of ours - unless a package owns it:
+# Debian may one day ship this very module, and then it is theirs.
+# shellcheck source=original-state.sh
+. "$(dirname "$0")/original-state.sh"
+orig_use_system
+for f in "$SPADIR/libspa-codec-bluez5-aac.so" "$SPADIR/aac-built-against"; do
+    if dpkg -S "$f" >/dev/null 2>&1; then orig_record "$f"
+    else orig_record "$f" --ours-if-present; fi
+done
 sudo install -m644 "$SRC/build-aac/spa/plugins/bluez5/libspa-codec-bluez5-aac.so" \
     "$SPADIR/libspa-codec-bluez5-aac.so"
 printf '%s\n' "$PWVER" | sudo tee "$SPADIR/aac-built-against" >/dev/null
+orig_mark_ours "$SPADIR/libspa-codec-bluez5-aac.so"
+orig_mark_ours "$SPADIR/aac-built-against"
 
 echo
 echo "Done. Restart the audio stack and reconnect the headset:"

@@ -42,11 +42,21 @@ if [ ${#missing[@]} -eq 0 ]; then
     echo "      all present"
 else
     echo "      installing ${missing[*]}"
+    # Written down first: what was installed before, so that the packages
+    # this adds - the named ones and whatever apt pulls in with them - can be
+    # told apart afterwards, and uninstall.sh removes exactly those again.
+    # shellcheck source=original-state.sh
+    . tools/original-state.sh
+    orig_use_system
+    before=$(mktemp) || exit 1
+    trap 'rm -f "$before" "$before.rc"' EXIT
+    orig_packages_snapshot "$before"
     # A stale package index is the ordinary reason the first attempt fails on
     # a phone that has not seen "apt update" in weeks, so try again after one.
     sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends "${missing[@]}" \
         || { sudo apt-get update
              sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends "${missing[@]}"; }
+    orig_packages_added "$before"
 fi
 
 echo "   upstream droid sources"

@@ -27,6 +27,28 @@ if [ "$(id -u)" = 0 ]; then
 fi
 cd "$(dirname "$0")"
 
+# Before anything is changed: what is there now. Every path below is recorded
+# once, before its first write, in /var/lib/furios-audio-original (root's), and
+# uninstall.sh puts back exactly that - see tools/original-state.sh. A second
+# run of this script finds the record and leaves it as it is: the first
+# original is the one that counts.
+# shellcheck source=tools/original-state.sh
+. tools/original-state.sh
+orig_use_system
+# Nothing here writes them any more, but uninstall.sh used to recreate the
+# first three (furios-quirks-device ships them) and delete the other two
+# without looking. With a record it knows what they were instead.
+for u in pipewire-pulse.service pipewire-pulse.socket wireplumber.service; do
+    orig_record "/etc/systemd/user/$u"
+done
+for u in pulseaudio.service pulseaudio.socket; do
+    # Only an older, root-based audioctl ever put a mask here.
+    orig_record "/etc/systemd/user/$u" --ours-if-present
+done
+# And the user's side, before "systemctl --user enable" below writes the
+# first want: the same record audioctl keeps for its own switches.
+./audioctl original record
+
 # The four newer units name /usr/bin, because that is where the package puts
 # their programs. This install goes to /usr/local, so the path is rewritten on
 # the way in - the same thing the modem and GPS installers do. The two older
@@ -48,12 +70,14 @@ echo "== the plugin PipeWire needs to reach the HAL"
 ./tools/build-plugin.sh
 
 echo "== audioctl, its units and its state"
-sudo mkdir -p /usr/local/share/furios-audio /usr/local/bin
-sudo install -m755 audioctl                  /usr/local/bin/audioctl
-sudo install -m644 tunnel.conf               /usr/local/share/furios-audio/tunnel.conf
-sudo install -m644 furios-pw-tunnel.service  /etc/systemd/user/furios-pw-tunnel.service
-sudo install -m644 furios-audio-apply.service /etc/systemd/user/furios-audio-apply.service
-sudo install -m644 furios-audio-verify.service /etc/systemd/user/furios-audio-verify.service
+orig_record_dir /usr/local/share/furios-audio --ours-if-present
+orig_mkdir /usr/local/share/furios-audio /usr/local/bin /etc/systemd/user
+orig_install 755 audioctl                  /usr/local/bin/audioctl
+orig_install 644 tools/original-state.sh   /usr/local/share/furios-audio/original-state.sh
+orig_install 644 tunnel.conf               /usr/local/share/furios-audio/tunnel.conf
+orig_install 644 furios-pw-tunnel.service  /etc/systemd/user/furios-pw-tunnel.service
+orig_install 644 furios-audio-apply.service /etc/systemd/user/furios-audio-apply.service
+orig_install 644 furios-audio-verify.service /etc/systemd/user/furios-audio-verify.service
 
 # Bluetooth calls, Bluetooth microphone, the podcast that must not resume in
 # somebody's pocket, and the routing refresh callaudiod needs. audioctl
@@ -64,16 +88,17 @@ for entry in "${TOOLS[@]}"; do
     set -- $entry
     unit=$1
     source_file=$2
-    sudo install -m755 "$source_file" "/usr/local/bin/${unit%.service}"
+    orig_install 755 "$source_file" "/usr/local/bin/${unit%.service}"
     sed "s|^ExecStart=/usr/bin/|ExecStart=/usr/local/bin/|" "$unit" \
-        | sudo tee "/etc/systemd/user/$unit" >/dev/null
-    sudo chmod 644 "/etc/systemd/user/$unit"
+        | orig_install_stdin 644 "/etc/systemd/user/$unit"
 done
 
 # The state directory has to be WRITABLE by this user, not merely present:
 # "mkdir -p" succeeds on a directory that already exists and belongs to root,
 # and then the write below fails and takes the whole install down with it.
-sudo mkdir -p /var/lib/furios-audio
+orig_record_dir /var/lib/furios-audio --ours-if-present
+orig_record /var/lib/furios-audio/profile --ours-if-present
+orig_mkdir /var/lib/furios-audio
 [ -w /var/lib/furios-audio ] || sudo chown "$(id -un):$(id -gn)" /var/lib/furios-audio
 sudo chmod 0755 /var/lib/furios-audio
 # Only if there is nothing yet. This used to be written unconditionally, so
