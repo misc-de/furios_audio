@@ -767,18 +767,59 @@ class ScoHoldBehaviour(unittest.TestCase):
         self.hold_with(None)
         self.assertEqual(FakePopen.started, [])
 
-    def test_it_gives_up_rather_than_wait_forever(self):
+    def timers(self):
+        armed = []
+        original = sco.GLib.timeout_add
+        sco.GLib.timeout_add = lambda ms, fn, *args: armed.append((ms, args)) or 1
+        self.addCleanup(setattr, sco.GLib, "timeout_add", original)
+        return armed
+
+    def test_after_the_wait_it_says_why_and_keeps_looking_slowly(self):
         hold = sco.Hold()
         sco.hands_free_sink = lambda: None
         self.addCleanup(setattr, sco, "hands_free_sink", hands_free_sink_real)
+        armed = self.timers()
         out = io.StringIO()
         with redirect_stdout(out):
             hold.begin(waited=sco.MAX_WAIT_MS)
         self.assertEqual(FakePopen.started, [])
-        # And it says why - a call that is silently not held looks exactly
-        # like a headset that is broken. Which of the two reasons it gives is
+        # It says why - a call that is silently not held looks exactly like a
+        # headset that is broken. Which of the two reasons it gives is
         # ScoHoldSaysWhyItHeldNothing's business.
         self.assertIn("nothing to hold", out.getvalue())
+        # And it does not stop: a headset put on mid-call needs its link too.
+        self.assertEqual([ms for ms, _ in armed], [sco.SLOW_POLL_MS])
+
+    def test_it_says_so_only_once(self):
+        hold = sco.Hold()
+        sco.hands_free_sink = lambda: None
+        self.addCleanup(setattr, sco, "hands_free_sink", hands_free_sink_real)
+        self.timers()
+        out = io.StringIO()
+        with redirect_stdout(out):
+            hold.begin(waited=sco.MAX_WAIT_MS + sco.SLOW_POLL_MS)
+        self.assertEqual(out.getvalue(), "")
+
+    def test_a_headset_that_joins_mid_call_is_held(self):
+        # Put on a minute into the call: the Lua script moves the call over,
+        # and the slow look finds the hands-free sink and holds the link.
+        hold = sco.Hold()
+        sco.hands_free_sink = lambda: "bluez_output.X"
+        self.addCleanup(setattr, sco, "hands_free_sink", hands_free_sink_real)
+        with redirect_stdout(io.StringIO()):
+            hold.begin(waited=60000, epoch=hold.epoch)
+        self.assertEqual(len(FakePopen.started), 1)
+
+    def test_it_does_not_look_forever(self):
+        # A missed CallRemoved must not keep pactl running once a second all
+        # day; the hold itself has the same bound.
+        hold = sco.Hold()
+        sco.hands_free_sink = lambda: None
+        self.addCleanup(setattr, sco, "hands_free_sink", hands_free_sink_real)
+        armed = self.timers()
+        with redirect_stdout(io.StringIO()):
+            hold.begin(waited=sco.MAX_HOLD_S * 1000)
+        self.assertEqual(armed, [])
 
     def test_stopping_ends_the_stream(self):
         hold = self.hold_with("bluez_output.X")

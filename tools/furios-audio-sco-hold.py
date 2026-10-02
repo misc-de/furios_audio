@@ -76,6 +76,16 @@ HANDS_FREE_PREFIX = "headset-head-unit"
 POLL_MS = 100
 MAX_WAIT_MS = 12000
 
+# After the twelve seconds, keep looking - slowly - for as long as the call is
+# up. A headset can join a call that is already running: put on mid-call, it
+# connects, droid-bluetooth-call.lua moves the call over, and without a stream
+# here there is no SCO link and the call is silent in both directions. The
+# same when the headset leaves and comes back. One look is a pactl round trip
+# of about 15 ms, so once a second costs a call without a headset about 1.5 %
+# of a core, and a headset that joins has its link within a second of
+# reaching hands-free.
+SLOW_POLL_MS = 1000
+
 # callaudiod says when it has finished setting a call up: AudioMode turns to
 # 1 only once its last port change has gone through (operation_complete_cb in
 # cad-pulse.c). That is the moment droid-bluetooth-call.lua waits for, and it
@@ -337,14 +347,21 @@ class Hold:
         if sink:
             self.start_on(sink)
             return False
-        if waited >= MAX_WAIT_MS:
+        if waited == MAX_WAIT_MS:
+            # Said once, at the point the old code gave up; the looking goes on.
             if bluez_profile() is None:
-                log("no Bluetooth headset on this call - nothing to hold")
+                log("no Bluetooth headset on this call - nothing to hold "
+                    "unless one joins")
             else:
-                log("no hands-free profile after %d s - not holding anything. "
-                    "Is furios.bluetooth-call-routing on?" % (MAX_WAIT_MS // 1000))
+                log("no hands-free profile after %d s - not holding anything "
+                    "yet. Is furios.bluetooth-call-routing on?"
+                    % (MAX_WAIT_MS // 1000))
+        if waited >= MAX_HOLD_S * 1000:
+            # The same bound as the hold itself: a missed CallRemoved must not
+            # keep this looking all day.
             return False
-        GLib.timeout_add(POLL_MS, self.begin, waited + POLL_MS, self.epoch)
+        step = POLL_MS if waited < MAX_WAIT_MS else SLOW_POLL_MS
+        GLib.timeout_add(step, self.begin, waited + step, self.epoch)
         return False
 
     def restart_wait(self):

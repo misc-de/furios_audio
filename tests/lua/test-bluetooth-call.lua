@@ -419,6 +419,81 @@ local late = wp.add("device", bt_card())
 fire(late)                                  -- the headset announces itself
 T.check("a headset connected mid-call is picked up", #wp.calls_of("set_params") >= 3)
 
+-- And the other way round: the headset leaves mid-call - taken off, back in
+-- its case. The phone card says nothing then either, so without this the
+-- route stays on BT SCO and the call goes silent until someone hangs up.
+local function remove_headset(card)
+  for i, d in ipairs(wp.objects.device) do
+    if d == card then table.remove(wp.objects.device, i) break end
+  end
+  local hook = wp.hooks["monitor/droid-bluetooth-call-headset-gone"]
+  T.traced(function () hook.execute({ get_subject = function () return card end }) end)
+end
+
+local function routes_restored()
+  local idx = {}
+  for _, c in ipairs(wp.calls_of("set_params")) do
+    local body = c.args[3] and c.args[3].body
+    if c.args[2] == "Route" and body then table.insert(idx, body.index) end
+  end
+  table.sort(idx)
+  return table.concat(idx, ",")
+end
+
+setup()
+dev = wp.add("device", droid_card("voicecall"))
+local leaving = wp.add("device", bt_card())
+leaving.properties["device.name"] = "bluez_card.9C_DF_03_00_00_06"
+fire(dev)
+T.check("the call is on the headset", in_bt_call and took_over)
+wp.reset()
+remove_headset(leaving)
+T.check_equal("a headset that leaves mid-call gives the call back to the phone",
+              "0,1", routes_restored())
+T.check("and the call is no longer on the headset", not in_bt_call)
+T.check("but nothing is given up for the rest of the call", not _G.gave_up)
+
+-- It comes back during the same call: picked up again, like a late one.
+wp.reset()
+local back = wp.add("device", bt_card())
+fire(back)
+T.check("a headset that comes back mid-call is picked up again",
+        in_bt_call and took_over and #wp.calls_of("set_params") >= 3)
+
+-- Another Bluetooth device leaving is none of the call's business.
+setup()
+dev = wp.add("device", droid_card("voicecall"))
+local mine = wp.add("device", bt_card())
+mine.properties["device.name"] = "bluez_card.A"
+fire(dev)
+wp.reset()
+local other = wp.object({ ["device.api"] = "bluez5", ["device.name"] = "bluez_card.B" })
+remove_headset(other)
+T.check_equal("another device leaving does not move the call", "", routes_restored())
+T.check("the call stays on the headset", in_bt_call)
+
+-- Gone before the takeover even happened: nothing was moved, so nothing is
+-- put back, and the takeover that was waiting stands down.
+setup()
+dev = wp.add("device", droid_card("voicecall"))
+local early = wp.add("device", bt_card())
+local hook0 = wp.hooks["monitor/droid-bluetooth-call"]
+T.traced(function () hook0.execute({ get_subject = function () return dev end }) end)
+remove_headset(early)
+wp.reset()
+T.traced(function () wp.fire_timers() end)
+T.check_equal("a headset gone before the takeover leaves the call alone", 0,
+              #wp.calls_of("set_params"))
+
+-- No call on the headset: a headset leaving is not ours to act on.
+setup()
+dev = wp.add("device", droid_card("voicecall"))
+fire(dev)
+wp.reset()
+remove_headset(wp.object({ ["device.api"] = "bluez5" }))
+T.check_equal("a headset leaving an earpiece call changes nothing", 0,
+              #wp.calls_of("set_params"))
+
 -- The same event with no phone card anywhere is not something to act on.
 setup()
 wp.add("device", bt_card())

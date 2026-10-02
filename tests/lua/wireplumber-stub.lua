@@ -172,7 +172,7 @@ local script_state = {
   "in_bt_call", "saved_routes", "mixer", "device", "log",
   "gave_up", "defends", "quiet_token", "took_over",
   "announced_wbs", "codec_token", "call_profile", "callaudio_done",
-  "tried",
+  "tried", "call_card_name",
 }
 
 -- Run every timer callback that is waiting, the way the main loop would.

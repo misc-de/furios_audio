@@ -138,6 +138,12 @@ codec_token = 0
 -- one to keep.
 call_profile = nil
 
+-- The headset the call was put on, by device.name, so that a second Bluetooth
+-- device leaving does not take the call off the first. By name and not by
+-- bound-id: the card in a removal event is a proxy whose global is already
+-- gone, and its properties are what is sure to still be there.
+call_card_name = nil
+
 -- Off unless someone turned it on. An unknown setting, an older WirePlumber,
 -- anything unexpected: all of that has to come out as "leave the call alone".
 function autoRoutingEnabled ()
@@ -466,6 +472,7 @@ end
 
 function enterBtCall (dev, card)
   saved_routes = activeRoutes (dev)
+  call_card_name = card.properties["device.name"]
   in_bt_call = true
   took_over = false
   defends = 0
@@ -510,6 +517,35 @@ function leaveBtCall (dev, card)
   end
   setBtProfile (card, "a2dp-sink")
   log:info ("bluetooth call: over, back to the phone")
+end
+
+-- The headset went away mid-call: taken off, put in its case, out of range.
+--
+-- Nothing else notices. The phone card's profile and routes are exactly as
+-- they were, so the route stays on BT SCO, the HAL keeps the voice path on a
+-- Bluetooth line that leads nowhere, and the call is silent in both
+-- directions until someone hangs up. So put back what the call had before it
+-- was moved - earpiece or speaker, whichever it was.
+--
+-- Not gave_up: a headset that comes back during the same call is picked up
+-- again, the same way as one that joins late.
+function headsetGone (dev)
+  local moved = took_over
+  in_bt_call = false
+  took_over = false
+  defends = 0
+  call_profile = nil
+  call_card_name = nil
+  -- A takeover still waiting for quiet, or a codec watch, stands down.
+  quiet_token = quiet_token + 1
+  codec_token = codec_token + 1
+  if moved and saved_routes and dev ~= nil then
+    for _, name in pairs (saved_routes) do
+      setRouteByName (dev, name)
+    end
+    log:info ("bluetooth call: the headset left - the call is back on the phone")
+  end
+  saved_routes = nil
 end
 
 -- Hand the call back to the phone and do not try again until it is over.
@@ -635,6 +671,44 @@ bluetooth_call_hook = SimpleEventHook {
 }
 
 bluetooth_call_hook:register ()
+
+-- The other half of "a headset mid-call": one that leaves. The Bluetooth card
+-- is gone from the object manager by the time this runs, so it is only told
+-- apart by the name it had.
+headset_gone_hook = SimpleEventHook {
+  name = "monitor/droid-bluetooth-call-headset-gone",
+  interests = {
+    EventInterest {
+      Constraint { "event.type", "=", "device-removed" },
+      Constraint { "device.api", "=", "bluez5" },
+    },
+  },
+  execute = function (event)
+    local ok, err = pcall (function ()
+      if not in_bt_call then
+        return
+      end
+      -- The event carries the card's properties (WirePlumber's own
+      -- device-info-cache reads object.serial the same way); the subject's
+      -- are the fallback.
+      local props = event.get_properties and event:get_properties ()
+      local card = event:get_subject ()
+      local name = (props and props["device.name"])
+                   or (card and card.properties and card.properties["device.name"])
+      if call_card_name ~= nil and name ~= nil and name ~= call_card_name then
+        return
+      end
+      headsetGone (droidCard ())
+    end)
+    if not ok then
+      in_bt_call = false
+      saved_routes = nil
+      log:warning ("bluetooth call: headset gone - " .. tostring (err))
+    end
+  end,
+}
+
+headset_gone_hook:register ()
 
 -- callaudiod's report, passed on by furios-audio-sco-hold. It only shortens the
 -- wait: it never takes over by itself, and anything that moves afterwards
