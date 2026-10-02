@@ -84,6 +84,18 @@ val=$(keys_in_block "$ROOT/wireplumber/51-bluez-ofono.conf" "wireplumber.setting
           "$ROOT/wireplumber/51-bluez-ofono.conf")
 check "the always-show-microphone setting is off" "false" "$val"
 
+# Calls go to the headset unless someone says otherwise. The visible switch
+# is furios.bluetooth-helpers (the app's Bluetooth option); this one off by
+# default was invisible, and a reinstall that forgot the hand-saved value put
+# every call back on the earpiece (2026-09-30).
+printf '\ncalls follow the Bluetooth option\n'
+val=$(awk -F'= *' '/^ *furios.bluetooth-call-routing +=/ && !/\{/ {print $2}' \
+      "$ROOT/wireplumber/51-bluez-ofono.conf")
+check "furios.bluetooth-call-routing is on" "true" "$val"
+val=$(awk '/furios.bluetooth-call-routing = \{/ {s=1} s && /default/ {print $3; exit}' \
+      "$ROOT/wireplumber/51-bluez-ofono.conf")
+check "and its schema default agrees" "true" "$val"
+
 # The backend decides whether there is a hands-free profile at all on this
 # device. Set to "ofono" it would take every Bluetooth call and the headset
 # microphone with it - the reasons fill the top of 51-bluez-ofono.conf, and a
