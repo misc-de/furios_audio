@@ -1671,6 +1671,11 @@ static int impl_init(const struct spa_handle_factory *factory,
 	str = info ? spa_dict_lookup(info, "droid.device-port") : NULL;
 	if (str)
 		snprintf(this->input_port_name, sizeof(this->input_port_name), "%s", str);
+	/* On a playback node the same property names the output device, e.g.
+	 * "Telephony Tx" for the call uplink. The device route policy only
+	 * drives the main nodes, so nothing overwrites it. */
+	if (str && !this->capture)
+		snprintf(this->wanted_port, sizeof(this->wanted_port), "%s", str);
 
 	/* Preferred format from the node properties. The VoIP channel runs at
 	 * 16 kHz, the primary one at 48. */

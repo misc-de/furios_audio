@@ -56,6 +56,13 @@
 #define OBJ_VOIP_SINK   2
 #define OBJ_VOIP_SOURCE 3
 
+/* Extra nodes for the cellular call itself: incall_music_uplink plays into
+ * the uplink (the caller hears it), voice tx records the call. Same rules as
+ * the VoIP nodes: no card.profile.device, low priority - only used when
+ * picked explicitly, e.g. by an answering machine. */
+#define OBJ_CALL_SINK   4
+#define OBJ_CALL_SOURCE 5
+
 #define PROFILE_OFF           0
 #define PROFILE_DEFAULT       1
 #define PROFILE_VOICECALL     2
@@ -622,6 +629,42 @@ static void emit_voip_node(struct impl *this, bool sink)
 			sink ? OBJ_VOIP_SINK : OBJ_VOIP_SOURCE, &info);
 }
 
+static void emit_call_node(struct impl *this, bool sink)
+{
+	struct spa_device_object_info info;
+	struct spa_dict_item items[14];
+	uint32_t n = 0;
+
+	items[n++] = SPA_DICT_ITEM_INIT("node.name",
+			sink ? "droid-call-sink" : "droid-call-source");
+	items[n++] = SPA_DICT_ITEM_INIT("node.description",
+			sink ? "Phone (To Caller)" : "Phone (From Call)");
+	items[n++] = SPA_DICT_ITEM_INIT("media.class",
+			sink ? "Audio/Sink" : "Audio/Source");
+	items[n++] = SPA_DICT_ITEM_INIT("device.api", DROID_API_NAME);
+	items[n++] = SPA_DICT_ITEM_INIT("droid.mix-port",
+			sink ? "incall_music_uplink" : "voice tx");
+	items[n++] = SPA_DICT_ITEM_INIT("droid.device-port",
+			sink ? "Telephony Tx" : "Voice Call In");
+	if (!sink)
+		items[n++] = SPA_DICT_ITEM_INIT("droid.audio-source", "voice call");
+	items[n++] = SPA_DICT_ITEM_INIT("audio.format", "S16LE");
+	items[n++] = SPA_DICT_ITEM_INIT("audio.rate", "48000");
+	items[n++] = SPA_DICT_ITEM_INIT("audio.channels", sink ? "2" : "1");
+	items[n++] = SPA_DICT_ITEM_INIT("audio.position", sink ? "FL,FR" : "MONO");
+	items[n++] = SPA_DICT_ITEM_INIT("node.driver", "true");
+	items[n++] = SPA_DICT_ITEM_INIT("priority.session", "100");
+
+	info = SPA_DEVICE_OBJECT_INFO_INIT();
+	info.type = SPA_TYPE_INTERFACE_Node;
+	info.factory_name = sink ? "api.droid.pcm" : "api.droid.pcm.source";
+	info.change_mask = SPA_DEVICE_OBJECT_CHANGE_MASK_PROPS;
+	info.props = &SPA_DICT_INIT(items, n);
+
+	spa_device_emit_object_info(&this->hooks,
+			sink ? OBJ_CALL_SINK : OBJ_CALL_SOURCE, &info);
+}
+
 static void emit_nodes(struct impl *this, bool present)
 {
 	uint32_t i;
@@ -634,11 +677,15 @@ static void emit_nodes(struct impl *this, bool present)
 		emit_node(this, DEV_SOURCE);
 		emit_voip_node(this, true);
 		emit_voip_node(this, false);
+		emit_call_node(this, true);
+		emit_call_node(this, false);
 	} else {
 		for (i = 0; i < N_DEVICES; i++)
 			spa_device_emit_object_info(&this->hooks, i, NULL);
 		spa_device_emit_object_info(&this->hooks, OBJ_VOIP_SINK, NULL);
 		spa_device_emit_object_info(&this->hooks, OBJ_VOIP_SOURCE, NULL);
+		spa_device_emit_object_info(&this->hooks, OBJ_CALL_SINK, NULL);
+		spa_device_emit_object_info(&this->hooks, OBJ_CALL_SOURCE, NULL);
 	}
 	this->nodes_emitted = present;
 }

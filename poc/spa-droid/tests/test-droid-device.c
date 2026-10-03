@@ -775,7 +775,8 @@ static void test_device_lifecycle(const char *fixture)
 
 	spa_device_add_listener(dev, &listener, &device_events, &counts);
 	check_uint("a listener is told about the card", 1, counts.info > 0 ? 1 : 0);
-	check_uint("and about the nodes it should create", 4, counts.objects);
+	/* main sink+source, VoIP sink+source, call sink+source */
+	check_uint("and about the nodes it should create", 6, counts.objects);
 
 	/* off, default, voicecall, communication - callaudiod looks for the
 	 * middle two by name, so the count is not incidental. */
@@ -903,7 +904,7 @@ static void test_device_lifecycle(const char *fixture)
 				SPA_PARAM_PROFILE_index, SPA_POD_Int(PROFILE_OFF));
 		counts.removed = 0;
 		spa_device_set_param(dev, SPA_PARAM_Profile, 0, param);
-		check_uint("switching off takes the nodes away", 4, counts.removed);
+		check_uint("switching off takes the nodes away", 6, counts.removed);
 
 		b = SPA_POD_BUILDER_INIT(buffer, sizeof(buffer));
 		param = spa_pod_builder_add_object(&b,
@@ -911,7 +912,7 @@ static void test_device_lifecycle(const char *fixture)
 				SPA_PARAM_PROFILE_index, SPA_POD_Int(PROFILE_DEFAULT));
 		counts.objects = 0;
 		spa_device_set_param(dev, SPA_PARAM_Profile, 0, param);
-		check_uint("and switching back brings them", 4, counts.objects);
+		check_uint("and switching back brings them", 6, counts.objects);
 	}
 
 	/* Things the graph can ask for that we do not answer. */
