@@ -647,7 +647,9 @@ static void emit_call_node(struct impl *this, bool sink)
 	items[n++] = SPA_DICT_ITEM_INIT("droid.device-port",
 			sink ? "Telephony Tx" : "Voice Call In");
 	if (!sink)
-		items[n++] = SPA_DICT_ITEM_INIT("droid.audio-source", "voice call");
+		/* The caller only: "voice call" mixes in the uplink, which an
+		 * answering machine has muted - it recorded at noise level. */
+		items[n++] = SPA_DICT_ITEM_INIT("droid.audio-source", "voice downlink");
 	items[n++] = SPA_DICT_ITEM_INIT("audio.format", "S16LE");
 	items[n++] = SPA_DICT_ITEM_INIT("audio.rate", "48000");
 	items[n++] = SPA_DICT_ITEM_INIT("audio.channels", sink ? "2" : "1");

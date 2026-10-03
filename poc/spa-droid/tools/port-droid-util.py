@@ -71,6 +71,25 @@ REPLACEMENTS = [
 
                 if (port->type == AUDIO_DEVICE_IN_TELEPHONY_RX) {""",
     ),
+    (
+        # In a call upstream turns every input into AUDIO_SOURCE_VOICE_CALL.
+        # An answering machine wants the caller only: its uplink is muted,
+        # and on this MediaTek "voice call" came back at noise level (peak
+        # 357 while the caller spoke). The HAL has a downlink-only provider
+        # (AudioALSACaptureDataProviderVoiceDL) - a source asking for one
+        # direction keeps it.
+        """        case AUDIO_MODE_IN_CALL:
+            audio_source_override = AUDIO_SOURCE_VOICE_CALL;
+            break;""",
+        """        case AUDIO_MODE_IN_CALL:
+            /* SPA port: a tap on one direction of the call keeps it. */
+            if (audio_source == AUDIO_SOURCE_VOICE_UPLINK ||
+                audio_source == AUDIO_SOURCE_VOICE_DOWNLINK)
+                audio_source_override = audio_source;
+            else
+                audio_source_override = AUDIO_SOURCE_VOICE_CALL;
+            break;""",
+    ),
 ]
 
 
