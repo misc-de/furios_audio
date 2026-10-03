@@ -300,6 +300,7 @@ static void reset_all(void)
 	hal_stub.enabled_module = fixture_module;
 	logbook_reset();
 	memset(&sys, 0, sizeof(sys));
+	uplink_muted = false;
 }
 
 /* A node, built the way the daemon builds one. */
@@ -2157,6 +2158,53 @@ static void test_reopen_when_things_fail(void)
 	free_node(this);
 }
 
+/* VoiceBox answers calls; the phone's microphone must stay off the line.
+ * The modem refuses its own mute on this MediaTek (RIL error 38), the HAL's
+ * Set_SpeechCall_UL_Mute is the way left. */
+static void test_uplink_mute(void)
+{
+	struct impl *this;
+
+	section("the call uplink mute for an answering machine");
+
+	reset_all();
+	this = make_node(false, playback_info());
+	if (!check("the node is there", this != NULL))
+		return;
+	negotiate(this, 48000, 2);
+	apply_mode(this, "call");
+	send_props(this, "droid.uplink-mute", "on");
+	check_str("arrives as a node prop and goes to the HAL",
+			"Set_SpeechCall_UL_Mute=1", hal_stub.last_parameters);
+	check_str("and is read back as a node property", "on", this->uplink_mute_state);
+	send_props(this, "droid.uplink-mute", "maybe");
+	check_str("nonsense sends nothing", "Set_SpeechCall_UL_Mute=1",
+			hal_stub.last_parameters);
+	hal_stub.all_parameters[0] = '\0';
+	apply_mode(this, "normal");
+	check("the end of the call takes it back - the next call is the user's",
+			strstr(hal_stub.all_parameters, "Set_SpeechCall_UL_Mute=0") != NULL);
+	hal_stub.all_parameters[0] = '\0';
+	apply_mode(this, "call");
+	apply_mode(this, "normal");
+	check("a call nobody muted is left alone",
+			strstr(hal_stub.all_parameters, "Set_SpeechCall_UL_Mute") == NULL);
+	free_node(this);
+
+	reset_all();
+	this = make_node(false, playback_info());
+	negotiate(this, 48000, 2);
+	apply_mode(this, "call");
+	hal_stub.set_parameters_result = -EINVAL;
+	send_props(this, "droid.uplink-mute", "on");
+	check_str("a refusal is read back as failed, never as on", "failed",
+			this->uplink_mute_state);
+	check("and warned about", logbook.warns >= 1);
+	hal_stub.set_parameters_result = 0;
+	apply_mode(this, "normal");
+	free_node(this);
+}
+
 /* Telling the HAL about the codec can fail too, and a capture node has its own
  * way into the Bluetooth port. */
 static void test_bt_codec_edges(void)
@@ -2718,6 +2766,7 @@ int main(void)
 	test_teardown();
 	test_mono();
 	test_keepalive();
+	test_uplink_mute();
 	test_no_memory();
 	test_odd_buffer_sizes();
 	test_timer_failures();

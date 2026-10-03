@@ -130,6 +130,7 @@ struct impl {
 	bool open_is_bt;            /* the open stream was opened on a BT SCO port */
 	char bt_wbs[4];             /* "on"/"off" - the codec BlueZ negotiated, "" = unknown */
 	char open_bt_wbs[4];        /* ... as it was when the stream was opened */
+	char uplink_mute_state[8];  /* "on"/"off"/"failed" - last answer, "" = never asked */
 	bool mode_holds_hal;        /* HAL only kept open for call mode */
 	bool in_call;               /* mode is AUDIO_MODE_IN_CALL */
 	uint64_t hal_latency_ns;    /* remembered at open time, see latency_ns() */
@@ -186,6 +187,8 @@ static void emit_port_info(struct impl *this, struct port *port, bool full);
 static void latency_changed(struct impl *this);
 static int apply_voice_volume(struct impl *this, const char *value);
 static int apply_bt_wbs(struct impl *this, const char *value);
+static int apply_uplink_mute(struct impl *this, const char *value);
+static void clear_uplink_mute(struct impl *this);
 /* Bluetooth is commented out of this device's audio_policy XML, so the port
  * for it does not exist in the parsed configuration and has to be built.
  * That lookup lives further down, next to the route handling. */
@@ -303,6 +306,9 @@ static int hal_open_input(struct impl *this, const pa_sample_spec *spec,
 
 /* One reference that is never returned; see the note in hal_open(). */
 static pa_droid_hw_module *hw_module_keepalive;
+/* The HAL's call uplink mute (Set_SpeechCall_UL_Mute) belongs to the module,
+ * not to a node - whoever set it, the end of the call takes it back. */
+static bool uplink_muted;
 
 /* The HAL has to know about Bluetooth before the stream is opened.
  *
@@ -971,7 +977,7 @@ static void emit_node_info(struct impl *this, bool full)
 	uint64_t old = full ? this->info.change_mask : 0;
 	/* props MUST be set: libpipewire-module-adapter passes info->props on to
 	 * pw_properties_update unchecked - NULL segfaults there. */
-	struct spa_dict_item items[3];
+	struct spa_dict_item items[4];
 	uint32_t n = 0;
 
 	/* "droid-hal" is the identifier PulseAudio's droid module uses.
@@ -980,6 +986,10 @@ static void emit_node_info(struct impl *this, bool full)
 	items[n++] = SPA_DICT_ITEM_INIT("media.class",
 			this->capture ? "Audio/Source" : "Audio/Sink");
 	items[n++] = SPA_DICT_ITEM_INIT("droid.mix-port", this->mix_port_name);
+	/* Read back by whoever set it: what the HAL took, not what was asked. */
+	if (this->uplink_mute_state[0])
+		items[n++] = SPA_DICT_ITEM_INIT("droid.uplink-mute",
+				this->uplink_mute_state);
 	this->info.props = &SPA_DICT_INIT(items, n);
 
 	if (full)
@@ -1517,6 +1527,8 @@ static int impl_node_set_param(void *object, uint32_t id, uint32_t flags,
 				apply_voice_volume(this, val);
 			else if (spa_streq(key, "droid.bt-wbs"))
 				apply_bt_wbs(this, val);
+			else if (spa_streq(key, "droid.uplink-mute"))
+				apply_uplink_mute(this, val);
 		}
 		spa_pod_parser_pop(&prs, &f);
 	}
@@ -1974,6 +1986,60 @@ static int apply_bt_wbs(struct impl *this, const char *value)
 	return hal_restart(this, this->started);
 }
 
+/* The phone's microphone out of the call uplink, for an answering machine.
+ *
+ * During a cellular call the microphone never passes PipeWire - it goes
+ * straight into the modem's DSP - and the modem's own mute (oFono
+ * CallVolume, RIL setMute) is refused on this MediaTek with error 38. The
+ * HAL has its own: Set_SpeechCall_UL_Mute ends in the speech driver's
+ * SetUplinkSourceMute, which mutes the microphone source and leaves what
+ * incall_music_uplink (droid-call-sink) mixes in on the line.
+ *
+ * Any node can carry it; the HAL module is shared. The answer goes back as
+ * the node property droid.uplink-mute, and the end of the call clears it. */
+static int apply_uplink_mute(struct impl *this, const char *value)
+{
+	pa_droid_hw_module *hw = this->hw ? this->hw : hw_module_keepalive;
+	bool on;
+
+	if (spa_streq(value, "on") || spa_streq(value, "true") || spa_streq(value, "1"))
+		on = true;
+	else if (spa_streq(value, "off") || spa_streq(value, "false") || spa_streq(value, "0"))
+		on = false;
+	else {
+		spa_log_warn(this->log, NAME " uplink mute \"%s\" is neither on nor off", value);
+		return -EINVAL;
+	}
+
+	if (hw == NULL || pa_droid_set_parameters(hw, on ?
+			"Set_SpeechCall_UL_Mute=1" : "Set_SpeechCall_UL_Mute=0") < 0) {
+		spa_log_warn(this->log, NAME " the HAL did not take the uplink mute (%s)",
+				on ? "on" : "off");
+		snprintf(this->uplink_mute_state, sizeof(this->uplink_mute_state), "failed");
+	} else {
+		uplink_muted = on;
+		spa_log_info(this->log, NAME " call uplink mute %s", on ? "on" : "off");
+		snprintf(this->uplink_mute_state, sizeof(this->uplink_mute_state),
+				"%s", on ? "on" : "off");
+	}
+	this->info.change_mask |= SPA_NODE_CHANGE_MASK_PROPS;
+	emit_node_info(this, false);
+	return 0;
+}
+
+static void clear_uplink_mute(struct impl *this)
+{
+	if (!uplink_muted || this->hw == NULL)
+		return;
+	if (pa_droid_set_parameters(this->hw, "Set_SpeechCall_UL_Mute=0") < 0) {
+		spa_log_warn(this->log, NAME " call over, but the HAL did not take "
+				"the uplink mute back");
+		return;
+	}
+	uplink_muted = false;
+	spa_log_info(this->log, NAME " call over - uplink mute off");
+}
+
 /* Volume during a call. No PCM flows through the graph while a call is up, so
  * the adapter's software gain has nothing to act on. The voice path's level
  * lives in the HAL and is set through set_voice_volume; PulseAudio's
@@ -2116,6 +2182,10 @@ static int apply_mode(struct impl *this, const char *mode)
 
 	if (!this->hw)
 		return 0;   /* nothing open, nothing to do */
+
+	/* Before the mode goes back: the next call must not start muted. */
+	if (m == AUDIO_MODE_NORMAL)
+		clear_uplink_mute(this);
 
 	if (!pa_droid_hw_set_mode(this->hw, m)) {
 		spa_log_warn(this->log, NAME " audio mode \"%s\" rejected", mode);
