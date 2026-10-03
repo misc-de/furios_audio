@@ -121,6 +121,25 @@ REPLACEMENTS = [
 
     if (input_stream_open(stream, false) < 0) {""",
     ),
+    (
+        # The input audio patch left the mix sink's usecase.source at 0, and
+        # the MediaTek HAL turns a patch into "input_source=0;routing=..." -
+        # every route change reset the stream to AUDIO_SOURCE_DEFAULT right
+        # after its source was set. In a call that picks the uplink provider
+        # (CaptureDataProviderVoiceUL), so a tap asked for "voice downlink"
+        # recorded the muted microphone. AudioFlinger fills the field in;
+        # so do we.
+        """    sink.ext.mix.handle = stream->io_handle;
+
+    source.role = AUDIO_PORT_ROLE_SOURCE;
+    source.type = AUDIO_PORT_TYPE_DEVICE;""",
+        """    sink.ext.mix.handle = stream->io_handle;
+    /* SPA port: the source travels with the patch, as in AudioFlinger. */
+    sink.ext.mix.usecase.source = input->audio_source;
+
+    source.role = AUDIO_PORT_ROLE_SOURCE;
+    source.type = AUDIO_PORT_TYPE_DEVICE;""",
+    ),
 ]
 
 
