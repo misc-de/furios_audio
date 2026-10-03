@@ -47,6 +47,30 @@ REPLACEMENTS = [
         """    /* SPA port: no hook slots to release. */
 """,
     ),
+    (
+        # In a call upstream takes the first route that has the telephony
+        # receive device among its sources - and on the FLX1 the first such
+        # route is the device-to-device one into "Earpiece" (Voice Call In
+        # feeds the speakers too). Opening an input on an output device
+        # fails ("invalid mix_port type for Earpiece"), so a voice-call
+        # recording never started. Only a route into a mix port names the
+        # input to open: here "voice tx".
+        """        DM_LIST_FOREACH_DATA(route, stream->module->enabled_module->routes, state1) {
+            DM_LIST_FOREACH_DATA(port, route->sources, state2) {
+                if (port->role != DM_CONFIG_ROLE_SOURCE)
+                    continue;
+
+                if (port->type == AUDIO_DEVICE_IN_TELEPHONY_RX) {""",
+        """        DM_LIST_FOREACH_DATA(route, stream->module->enabled_module->routes, state1) {
+            /* SPA port: only a route into a mix port names an input. */
+            if (route->sink->port_type != DM_CONFIG_TYPE_MIX_PORT)
+                continue;
+            DM_LIST_FOREACH_DATA(port, route->sources, state2) {
+                if (port->role != DM_CONFIG_ROLE_SOURCE)
+                    continue;
+
+                if (port->type == AUDIO_DEVICE_IN_TELEPHONY_RX) {""",
+    ),
 ]
 
 
