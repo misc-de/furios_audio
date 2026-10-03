@@ -4,9 +4,10 @@
 """Dump the Android log (HAL messages included) without logcat, which does
 not link on the host. Usage: logd-dump.py [tail-lines]"""
 # Read Android logd without logcat: logdr speaks a tiny text protocol.
+import socket, struct, sys, time
 s = socket.socket(socket.AF_UNIX, socket.SOCK_SEQPACKET)
 s.connect("/dev/socket/logdr")
-s.send(b"dumpAndClose lids=0,1,2,3,4 tail=%d" % int(sys.argv[1]) if len(sys.argv) > 1 else 5000)
+s.send(b"dumpAndClose lids=0,1,2,3,4 tail=%d" % (int(sys.argv[1]) if len(sys.argv) > 1 else 5000))
 while True:
     d = s.recv(5 * 1024 + 64)
     if not d: break
