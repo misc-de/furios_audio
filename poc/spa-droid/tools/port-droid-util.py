@@ -90,6 +90,37 @@ REPLACEMENTS = [
                 audio_source_override = AUDIO_SOURCE_VOICE_CALL;
             break;""",
     ),
+    (
+        # A tap on the call opened on the first source port - the built-in
+        # microphone - and was moved to Voice Call In afterwards. The
+        # MediaTek HAL picks its capture provider when the stream opens, so
+        # that recorded digital silence (rms 1 over 8 s while the caller
+        # spoke). A call tap now opens on the call.
+        """        pa_assert(stream->active_device_port);
+    }
+
+    if (input_stream_open(stream, false) < 0) {""",
+        """        pa_assert(stream->active_device_port);
+    }
+
+    /* SPA port: a tap on the call opens on the call, not on the mic. */
+    if (stream->input->audio_source == AUDIO_SOURCE_VOICE_CALL ||
+        stream->input->audio_source == AUDIO_SOURCE_VOICE_UPLINK ||
+        stream->input->audio_source == AUDIO_SOURCE_VOICE_DOWNLINK) {
+        dm_config_port *device_port;
+        void *state;
+
+        DM_LIST_FOREACH_DATA(device_port, stream->module->enabled_module->attached_devices, state) {
+            if (device_port->role == DM_CONFIG_ROLE_SOURCE &&
+                device_port->type == AUDIO_DEVICE_IN_VOICE_CALL) {
+                stream->active_device_port = device_port;
+                break;
+            }
+        }
+    }
+
+    if (input_stream_open(stream, false) < 0) {""",
+    ),
 ]
 
 
