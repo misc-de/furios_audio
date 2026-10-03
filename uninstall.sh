@@ -97,7 +97,7 @@ remove_ours /etc/systemd/system/furios-audio-dmnr.service \
             /etc/systemd/system/multi-user.target.wants/furios-audio-dmnr.service
 # Written by "furios-audio-dmnr set on", a name nobody else uses, and removed
 # by "set off" just above - this only catches a tool that is gone already.
-sudo rm -f /etc/furios-audio-dmnr.persistent
+sudo rm -f "${DMNR_MARKER:-/etc/furios-audio-dmnr.persistent}"
 sudo rm -rf /run/furios-audio-dmnr
 
 # The old package, if dpkg still knows it - also as "config-files" only.

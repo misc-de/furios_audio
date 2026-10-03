@@ -262,6 +262,7 @@ round() {
         --setenv PATH "$S:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin" \
         --setenv STUB_LOG "$R/systemctl.log" --setenv W "$W" --setenv SPA "$SPA" \
         --setenv REAL_ROOT "$ROOT" --setenv ROUND "$1" \
+        --setenv DMNR_MARKER "$R/dmnr.persistent" \
         bash "$W/scenario.sh" 2>&1
 }
 
