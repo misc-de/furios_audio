@@ -39,6 +39,9 @@ Card #99"
 
 printf 'callaudiod refresh\n'
 
+# feedbackd is not running unless a case says so.
+make_stub pgrep 1 ""
+
 printf '\nduring a call it keeps its hands off\n'
 card_in voicecall
 make_recording_stub pkill 0 ""
@@ -106,6 +109,41 @@ make_recording_stub busctl 0 "u 0"
 out=$(CALLAUDIO_REFRESH_WAIT=20 refresh)
 check "callaudiod is started once the card is there" "yes" \
     "$(grep -q AudioMode "$STUBDIR/busctl.args" && echo yes || echo no)"
+
+printf '\nfeedbackd starts fresh as well - a crash leaves its sound connection broken\n'
+card_in default
+rm -f "$STUBDIR/pkill.args" "$STUBDIR/busctl.args"
+make_recording_stub pkill 0 ""
+make_recording_stub busctl 0 "u 0"
+make_stub pgrep 0 "4242"
+out=$(refresh)
+check "the old one is stopped" "yes" \
+    "$(grep -qx -- "-x feedbackd" "$STUBDIR/pkill.args" && echo yes || echo no)"
+check "and a new one is activated over D-Bus" "yes" \
+    "$(grep -q "StartServiceByName su org.sigxcpu.Feedback" "$STUBDIR/busctl.args" && echo yes || echo no)"
+check "it reports what it did" "yes" \
+    "$(printf '%s' "$out" | grep -q "feedbackd started again" && echo yes || echo no)"
+
+printf '\nfeedbackd not running: left to D-Bus activation\n'
+rm -f "$STUBDIR/pkill.args" "$STUBDIR/busctl.args"
+make_recording_stub pkill 0 ""
+make_recording_stub busctl 0 "u 0"
+make_stub pgrep 1 ""
+out=$(refresh)
+check "nothing is stopped for it" "no" \
+    "$(grep -q feedbackd "$STUBDIR/pkill.args" && echo yes || echo no)"
+check "and nothing activated" "no" \
+    "$(grep -q org.sigxcpu.Feedback "$STUBDIR/busctl.args" && echo yes || echo no)"
+
+printf '\nduring a call feedbackd is left alone too\n'
+card_in voicecall
+rm -f "$STUBDIR/pkill.args"
+make_recording_stub pkill 0 ""
+make_stub pgrep 0 "4242"
+out=$(refresh)
+check "nothing is stopped" "no" \
+    "$([ -e "$STUBDIR/pkill.args" ] && echo yes || echo no)"
+make_stub pgrep 1 ""
 
 printf '\nwhen the sound server is not there at all\n'
 make_stub pactl 1 ""

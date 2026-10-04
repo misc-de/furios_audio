@@ -65,4 +65,26 @@ busctl --user get-property org.mobian_project.CallAudio \
     /org/mobian_project/CallAudio org.mobian_project.CallAudio AudioMode \
     >/dev/null 2>&1 || true
 echo "callaudiod started again, with the card as it is now"
+
+# feedbackd has the same blind spot, for every sound the phone makes. Its
+# sound library keeps one connection to the sound server, and when PipeWire
+# goes down while a sound is playing - the crash on 2026-10-03 09:17 hit the
+# hang-up tone - that connection is left broken for good: every sound after it
+# fails with "Invalid state", the ringtone included, until feedbackd itself is
+# restarted. A clean restart leaves it alone (measured twice), a crash does
+# not, and this script cannot tell them apart - so feedbackd starts fresh
+# whenever WirePlumber does. It is D-Bus activated: stop it, wait until the
+# name is really free, and activate it again, or the next ring finds nobody.
+if pgrep -x feedbackd >/dev/null 2>&1; then
+    pkill -x feedbackd 2>/dev/null
+    gone=0
+    while pgrep -x feedbackd >/dev/null 2>&1 && [ "$gone" -lt 20 ]; do
+        sleep 0.1
+        gone=$((gone + 1))
+    done
+    busctl --user call org.freedesktop.DBus /org/freedesktop/DBus \
+        org.freedesktop.DBus StartServiceByName su org.sigxcpu.Feedback 0 \
+        >/dev/null 2>&1 || true
+    echo "feedbackd started again, with a fresh connection to the sound server"
+fi
 exit 0
