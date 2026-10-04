@@ -2016,36 +2016,138 @@ EOF
 # changes that line, ours silently wins over theirs - and that is the modem.
 OFONO_UNIT=${AUDIOCTL_OFONO_UNIT:-/usr/lib/systemd/system/ofono.service}
 OFONO_DROPIN=${AUDIOCTL_OFONO_DROPIN:-/etc/systemd/system/ofono.service.d/30-furios-audio-hfp.conf}
-ofono_dropin_check() {
+# The oFono drop-in replaces the vendor's ExecStart. If FuriLabs change that
+# line, ours silently wins over theirs: say so. Prints the vendor's command
+# when it differs, nothing when all is as expected.
+ofono_dropin_conflict() {
     local vendor
     [ -r "$OFONO_DROPIN" ] && [ -r "$OFONO_UNIT" ] || return 0
     vendor=$(sed -n 's/^ExecStart=//p' "$OFONO_UNIT" | tail -1)
-    [ "$vendor" = "/usr/sbin/ofonod --nodetach" ] && return 0
-    printf 'WARNING:            ofono.service now starts "%s", and our drop-in\n' "$vendor"
-    printf '                    replaces that - remove %s\n' "$OFONO_DROPIN"
-    printf '                    or reinstall furios_audio once it has been updated for it.\n'
+    [ "$vendor" = "/usr/sbin/ofonod --nodetach" ] || printf '%s' "$vendor"
 }
 
-status() {
-    local eff rec
+STATUS_UNITS="pulseaudio.service pipewire.service pipewire-pulse.service wireplumber.service furios-pw-tunnel.service"
+
+json_str() {
+    local v=${1//\\/\\\\}
+    v=${v//\"/\\\"}
+    printf '"%s"' "$v"
+}
+
+# For the app: the same answers as "status", as JSON, so the window does not
+# depend on how a line for people is worded.
+status_json() {
+    local eff rec sticky fell sinks u first=1 conflict
     eff=$(effective_profile)
     rec=$(current_profile)
-    printf 'Profile (active):   %s\n' "$eff"
-    if [ "$eff" != "$rec" ]; then
-        printf 'WARNING:            recorded is "%s" - that does not match the running system.\n' "$rec"
-        printf '                    Bring it back in line with "audioctl set %s".\n' "$eff"
-    fi
-    printf 'Profile (persistent):%s\n' " $(cat "$STICKY" 2>/dev/null || echo standard)"
-    [ -r "$FELL_BACK" ] && printf 'Fell back:          %s - that profile gave no phone output at boot\n' \
-        "$(cat "$FELL_BACK" 2>/dev/null)"
-    ofono_dropin_check
-    [ -r "$TRY" ] && printf 'Test mode:          yes - falls back on reboot\n'
-    printf 'Pulse server:       %s\n' "$(pulse_owner)"
-    printf 'Sinks:              %s\n' "$(pactl list sinks short 2>/dev/null | awk '{print $2}' | paste -sd, - || echo none)"
-    printf '\nUnits:\n'
-    for u in pulseaudio.service pipewire.service pipewire-pulse.service wireplumber.service furios-pw-tunnel.service; do
-        printf '  %-28s %-10s %s\n' "$u" "$(uctl is-enabled "$u" 2>&1 | head -1)" "$(uctl is-active "$u" 2>&1 | head -1)"
+    sticky=$(cat "$STICKY" 2>/dev/null || echo standard)
+    fell=$(cat "$FELL_BACK" 2>/dev/null || true)
+    conflict=$(ofono_dropin_conflict)
+    printf '{\n'
+    printf '  "profile": %s,\n' "$(json_str "$eff")"
+    printf '  "recorded": %s,\n' "$(json_str "$rec")"
+    printf '  "persistent": %s,\n' "$(json_str "$sticky")"
+    printf '  "test_mode": %s,\n' "$([ -r "$TRY" ] && echo true || echo false)"
+    printf '  "fell_back": %s,\n' "$([ -n "$fell" ] && json_str "$fell" || echo null)"
+    printf '  "ofono_dropin_conflict": %s,\n' "$([ -n "$conflict" ] && json_str "$conflict" || echo null)"
+    printf '  "pulse_server": %s,\n' "$(json_str "$(pulse_owner)")"
+    printf '  "sinks": ['
+    sinks=$(pactl list sinks short 2>/dev/null | awk '{print $2}')
+    for u in $sinks; do
+        [ $first = 1 ] || printf ', '
+        first=0; json_str "$u"
     done
+    printf '],\n  "units": {'
+    first=1
+    for u in $STATUS_UNITS; do
+        [ $first = 1 ] || printf ','
+        first=0
+        printf '\n    %s: {"enabled": %s, "active": %s}' "$(json_str "$u")" \
+            "$(json_str "$(uctl is-enabled "$u" 2>&1 | head -1)")" \
+            "$(json_str "$(uctl is-active "$u" 2>&1 | head -1)")"
+    done
+    printf '\n  }\n}\n'
+}
+
+# modemctl's form, like every misc-de ctl: a heading per part, ok / FAIL /
+# warn / -- in front of each line, colour only when somebody is watching, and
+# a closing line naming the fix. Exit 1 when something does not work.
+status() {
+    [ "${1:-}" = --json ] && { status_json; return 0; }
+    local eff rec sticky fell conflict sinks server u en ac problems=0 fix=
+    local c_ok= c_bad= c_warn= c_b= c_0=
+    if [ -t 1 ]; then
+        c_ok=$'\033[32m'; c_bad=$'\033[31m'; c_warn=$'\033[33m'; c_b=$'\033[1m'; c_0=$'\033[0m'
+    fi
+    _head() { printf '%s%s== %s%s\n' "${2-$'\n'}" "$c_b" "$1" "$c_0"; }
+    _ok()   { printf '  %sok%s    %s\n' "$c_ok" "$c_0" "$*"; }
+    _bad()  { printf '  %sFAIL%s  %s\n' "$c_bad" "$c_0" "$*"; problems=$((problems + 1)); }
+    _warn() { printf '  %swarn%s  %s\n' "$c_warn" "$c_0" "$*"; }
+    _skip() { printf '  --    %s\n' "$*"; }
+
+    eff=$(effective_profile)
+    rec=$(current_profile)
+    sticky=$(cat "$STICKY" 2>/dev/null || echo standard)
+    fell=$(cat "$FELL_BACK" 2>/dev/null || true)
+    conflict=$(ofono_dropin_conflict)
+
+    _head profile ""
+    if [ "$eff" != "$rec" ]; then
+        _bad "$eff running, but $rec recorded"
+        fix="audioctl set $eff"
+    elif [ "$eff" = "$sticky" ]; then
+        _ok "$eff - running and kept after a reboot"
+    else
+        _ok "$eff running"
+    fi
+    if [ -r "$TRY" ]; then
+        _warn "test mode - back to $sticky at the next reboot"
+    elif [ "$eff" != "$sticky" ]; then
+        _skip "after a reboot: $sticky"
+    fi
+    [ -n "$fell" ] && _warn "fell back at boot: $fell - that profile gave no phone output"
+    if [ -n "$conflict" ]; then
+        _bad "ofono.service now starts \"$conflict\", and our drop-in replaces that"
+        printf '        remove %s, or reinstall furios_audio once it knows the new line\n' "$OFONO_DROPIN"
+    fi
+
+    _head "sound server"
+    server=$(pulse_owner)
+    if [ "$server" = "not reachable" ]; then
+        _bad "Pulse server not reachable"
+        fix=${fix:-audioctl restart}
+    else
+        _ok "$server"
+    fi
+    sinks=$(pactl list sinks short 2>/dev/null | awk '{print $2}' | paste -sd, -)
+    if [ -n "$sinks" ]; then
+        _ok "sinks: ${sinks//,/, }"
+    elif [ "$server" != "not reachable" ]; then
+        _bad "no sinks - nothing to play to"
+        fix=${fix:-audioctl restart}
+    fi
+
+    _head units
+    for u in $STATUS_UNITS; do
+        en=$(uctl is-enabled "$u" 2>&1 | head -1)
+        ac=$(uctl is-active "$u" 2>&1 | head -1)
+        if [ "$ac" = failed ]; then
+            _bad "$(printf '%-28s %-10s %s' "$u" "$en" "$ac")"
+            fix=${fix:-audioctl restart}
+        elif [ "$ac" = active ]; then
+            _ok "$(printf '%-28s %-10s %s' "$u" "$en" "$ac")"
+        else
+            _skip "$(printf '%-28s %-10s %s' "$u" "$en" "$ac")"
+        fi
+    done
+
+    printf '\n'
+    if [ "$problems" -eq 0 ]; then
+        printf 'everything in place\n'
+        return 0
+    fi
+    printf '%d problem(s)%s\n' "$problems" "${fix:+ - fix with: $fix}"
+    return 1
 }
 
 # Sourcing this file with AUDIOCTL_LIB=1 gives access to the functions without
@@ -2089,7 +2191,7 @@ case "${1:-status}" in
     bt-codec)  case "${2:-status}" in status) ;; *) record_originals ;; esac ;;
 esac
 case "${1:-status}" in
-    status) status ;;
+    status) status "${2:-}" ;;
     # Toggle: deliberately in test mode, so a reboot always leads back to the
     # shipped state.
     toggle) if [ "$(effective_profile)" = pw-hal ]; then

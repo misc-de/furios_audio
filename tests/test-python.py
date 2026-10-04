@@ -156,6 +156,9 @@ class TheAppSpeaksOurWords(unittest.TestCase):
     what is read, and the launcher only if that is all there is.
     """
 
+    LEGACY_STATUS_LABELS = {"Profile (active):", "Profile (persistent):",
+                            "WARNING:", "Fell back:", "Test mode:",
+                            "Pulse server:", "Sinks:"}
     APP = "/usr/local/bin/misc-de"
     PACKAGES = ("/usr/local/lib/misc-de/miscde", "/usr/lib/misc-de/miscde")
 
@@ -198,11 +201,28 @@ class TheAppSpeaksOurWords(unittest.TestCase):
         # config key BTSAVE= among them - and those belong to another helper
         # in another repository, so they are not audioctl's to print.
         labels = re.findall(r'line\.startswith\("([^"]+:)"\)', app)
-        self.assertGreaterEqual(len(labels), 4)
+        # Since 4.10.2026 the app asks for "status --json" and keeps reading
+        # these lines only for an older audioctl - which this one is not.
+        if "status_json.get(" in app:
+            labels = [l for l in labels if l not in self.LEGACY_STATUS_LABELS]
+        else:
+            self.assertGreaterEqual(len(labels), 4)
         for label in labels:
             with self.subTest(label=label):
                 self.assertIn(label, audioctl,
                               "the app waits for a line audioctl never prints")
+
+
+    def test_every_status_key_the_app_reads_is_one_audioctl_writes(self):
+        app = self.installed()
+        keys = re.findall(r'status_json\.get\("([a-z_]+)"\)', app)
+        if not keys:
+            self.skipTest("the installed app predates status --json")
+        audioctl = (ROOT / "audioctl").read_text()
+        for key in keys:
+            with self.subTest(key=key):
+                self.assertIn('"%s":' % key, audioctl,
+                              "the app reads a key audioctl does not write")
 
 
 class FakeBus:

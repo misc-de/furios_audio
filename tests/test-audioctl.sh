@@ -1081,9 +1081,15 @@ check "pw-tunnel without its module is refused" "yes" \
 stub pactl 0 "Server Name: pulseaudio"
 stub_systemctl pulseaudio.service none
 check "status names the running profile" "yes" \
-    "$(with_audioctl 'status | grep -q "Profile (active):   standard" && echo yes || echo no')"
+    "$(with_audioctl 'status | grep -q "^  ok    standard" && echo yes || echo no')"
 check "and warns when the record disagrees" "yes" \
-    "$(with_audioctl 'echo pw-hal > "$STICKY"; status | grep -q "WARNING" && echo yes || echo no')"
+    "$(with_audioctl 'echo pw-hal > "$STICKY"; status | grep -q "FAIL  standard running, but pw-hal recorded" && echo yes || echo no')"
+check "and that is a failure, with the fix named" "1 yes" \
+    "$(with_audioctl 'echo pw-hal > "$STICKY"; out=$(status); rc=$?; printf "%s " $rc; printf "%s" "$out" | grep -q "fix with: audioctl set standard" && echo yes || echo no')"
+check "status --json is JSON with the profile" "standard" \
+    "$(with_audioctl 'status --json' | python3 -c 'import json,sys; print(json.load(sys.stdin)["profile"])' 2>/dev/null)"
+check "no colour codes without a terminal" "no" \
+    "$(with_audioctl 'status' | grep -q $'\033\\[' && echo yes || echo no)"
 check "the help lists every profile" "yes" \
     "$(with_audioctl 'usage | grep -c "pw-hal" | grep -q "[1-9]" && echo yes || echo no')"
 
@@ -1124,7 +1130,7 @@ stub_systemctl pulseaudio.service furios-audio-apply.service
 stub pactl 0 "60	droid-sink	PipeWire	s16le 2ch 48000Hz	SUSPENDED"
 
 check "with no arguments it reports the state" "yes" \
-    "$(run_audioctl | grep -q "Profile (active)" && echo yes || echo no)"
+    "$(run_audioctl | grep -q "^== profile" && echo yes || echo no)"
 check "list names the three profiles" "3" \
     "$(run_audioctl list | wc -l)"
 check "help explains itself" "yes" \
@@ -1160,8 +1166,7 @@ check "restart says so when no sink appears" "yes" \
 # status with a test profile in place, so the line about it is printed too.
 check "status says when a profile is only temporary" "yes" \
     "$(echo pw-hal > "$STUBDIR/state/profile.try"
-       run_audioctl status | grep -c "Test mode" >/dev/null && \
-       run_audioctl status | grep -q "falls back" && echo yes || echo no)"
+       run_audioctl status | grep -q "warn  test mode - back to" && echo yes || echo no)"
 rm -f "$STUBDIR/state/profile.try"
 
 check "rescue is reachable from the command line" "yes" \
@@ -1381,7 +1386,7 @@ check "WirePlumber is killed before it is stopped" "yes" \
     "$(grep -q -- '--user kill -s KILL wireplumber.service' "$STUBDIR/systemctl.log" && echo yes || echo no)"
 check "status tells about it" "yes" \
     "$(AUDIOCTL_STATE_DIR="$STUBDIR/state" bash "$HERE/../audioctl" status 2>/dev/null \
-       | grep -q '^Fell back: ' && echo yes || echo no)"
+       | grep -q 'warn  fell back at boot: ' && echo yes || echo no)"
 rm -f "$STUBDIR/state/fell-back"
 
 # A headset is not the phone. Under pw-hal a Bluetooth sink that comes up
