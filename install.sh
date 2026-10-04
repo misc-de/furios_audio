@@ -64,6 +64,7 @@ TOOLS=(
     "furios-audio-sco-hold.service            tools/furios-audio-sco-hold.py"
     "furios-audio-bt-mic.service              tools/furios-audio-bt-mic.py"
     "furios-audio-bt-reconnect.service        tools/furios-audio-bt-reconnect.py"
+    "furios-audio-ringback.service            tools/furios-audio-ringback.py"
 )
 
 echo "== the plugin PipeWire needs to reach the HAL"

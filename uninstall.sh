@@ -86,7 +86,7 @@ systemctl --user disable --now furios-audio-apply.service furios-audio-verify.se
     furios-pw-tunnel.service furios-audio-pause-on-disconnect.service \
     furios-audio-callaudio-refresh.service furios-audio-sco-hold.service \
     furios-audio-bt-mic.service furios-audio-bt-reconnect.service \
-    furios-audio-bt-pulse.service \
+    furios-audio-ringback.service furios-audio-bt-pulse.service \
     2>/dev/null || true
 # The echo suppression first, and in this order: take the mount down and drop
 # the marker while the tool is still there to do it. Removing the binary first
@@ -139,6 +139,7 @@ remove_ours /usr/local/bin/audioctl \
            /usr/local/bin/furios-audio-pause-on-disconnect \
            /usr/local/bin/furios-audio-callaudio-refresh \
            /usr/local/bin/furios-audio-sco-hold \
+           /usr/local/bin/furios-audio-ringback \
            /usr/local/bin/furios-audio-bt-mic \
            /usr/local/bin/furios-audio-bt-reconnect \
            /usr/local/bin/furios-audio-bluez5-fix \
@@ -150,6 +151,7 @@ remove_ours /usr/local/bin/audioctl \
            /etc/systemd/user/furios-audio-pause-on-disconnect.service \
            /etc/systemd/user/furios-audio-callaudio-refresh.service \
            /etc/systemd/user/furios-audio-sco-hold.service \
+           /etc/systemd/user/furios-audio-ringback.service \
            /etc/systemd/user/furios-audio-bt-mic.service \
            /etc/systemd/user/furios-audio-bt-reconnect.service \
            /etc/systemd/user/furios-audio-bt-pulse.service \
@@ -178,6 +180,7 @@ remove_unowned \
     /usr/bin/furios-audio-pause-on-disconnect \
     /usr/bin/furios-audio-callaudio-refresh \
     /usr/bin/furios-audio-sco-hold \
+    /usr/bin/furios-audio-ringback \
     /usr/bin/furios-audio-bt-mic \
     /usr/bin/furios-audio-bt-reconnect \
     /usr/bin/furios-audio-bluez5-fix \
@@ -191,6 +194,7 @@ remove_unowned \
     /usr/lib/systemd/user/furios-audio-pause-on-disconnect.service \
     /usr/lib/systemd/user/furios-audio-callaudio-refresh.service \
     /usr/lib/systemd/user/furios-audio-sco-hold.service \
+    /usr/lib/systemd/user/furios-audio-ringback.service \
     /usr/lib/systemd/user/furios-audio-bt-mic.service \
     /usr/lib/systemd/user/furios-audio-bt-reconnect.service \
     /usr/lib/systemd/user/furios-audio-bt-pulse.service \

@@ -47,6 +47,15 @@ until card_ready; do
     waited=$((waited + 2))
 done
 
+# tonegend - ringback and DTMF tones - is Requires=pipewire-pulse.service,
+# so it goes down with every PipeWire restart, and nothing brings it back:
+# after the crash on 2026-10-03 09:17 it stayed dead for 22 hours. Starting it
+# is harmless during a call too, so this comes before the check below.
+if systemctl --user is-enabled tone-generator.service >/dev/null 2>&1; then
+    systemctl --user start tone-generator.service >/dev/null 2>&1 \
+        && echo "tonegend running again"
+fi
+
 # Never during a call. Taking callaudiod away mid-call would leave the card in
 # the voicecall profile with nobody to bring it back. A WirePlumber restart at
 # that moment has broken the call anyway; making it worse helps no one.

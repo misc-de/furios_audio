@@ -39,8 +39,9 @@ Card #99"
 
 printf 'callaudiod refresh\n'
 
-# feedbackd is not running unless a case says so.
+# feedbackd is not running unless a case says so, and tonegend is not enabled.
 make_stub pgrep 1 ""
+make_stub systemctl 1 ""
 
 printf '\nduring a call it keeps its hands off\n'
 card_in voicecall
@@ -144,6 +145,19 @@ out=$(refresh)
 check "nothing is stopped" "no" \
     "$([ -e "$STUBDIR/pkill.args" ] && echo yes || echo no)"
 make_stub pgrep 1 ""
+
+printf '\ntonegend goes down with pipewire-pulse and is started again\n'
+card_in voicecall
+rm -f "$STUBDIR/systemctl.args"
+make_recording_stub systemctl 0 ""
+out=$(refresh)
+check "it is started - even during a call" "yes" \
+    "$(grep -qx -- "--user start tone-generator.service" "$STUBDIR/systemctl.args" && echo yes || echo no)"
+make_stub systemctl 1 ""
+rm -f "$STUBDIR/systemctl.args"
+out=$(refresh)
+check "not when it is not enabled" "no" \
+    "$(printf '%s' "$out" | grep -q tonegend && echo yes || echo no)"
 
 printf '\nwhen the sound server is not there at all\n'
 make_stub pactl 1 ""

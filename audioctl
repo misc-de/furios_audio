@@ -93,7 +93,8 @@ WPSTATE=${AUDIOCTL_WPSTATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/wireplumbe
 # Our user units and every place "enable" puts a want for them.
 OUR_USER_UNITS="furios-audio-apply.service furios-audio-verify.service furios-pw-tunnel.service
     furios-audio-pause-on-disconnect.service furios-audio-callaudio-refresh.service
-    furios-audio-sco-hold.service furios-audio-bt-mic.service furios-audio-bt-reconnect.service"
+    furios-audio-sco-hold.service furios-audio-bt-mic.service furios-audio-bt-reconnect.service
+    furios-audio-ringback.service"
 OUR_WANT_TARGETS="default.target graphical-session.target wireplumber.service"
 # Next to this file in the work tree, else where either install put it.
 ORIG_LIB=$(first_existing "$(dirname "${BASH_SOURCE[0]}")/tools/original-state.sh" \
@@ -854,6 +855,20 @@ ensure_sco_hold() {
     return 0
 }
 
+# Outgoing calls on VoLTE rang in silence: the network sends no ringback tone
+# (the modem says so, is_ibt=0) and nothing here made one. tonegend can, and
+# this service tells it when. Not tied to a profile - tonegend plays through
+# whichever sound server runs. Like the others, only the user can enable
+# their own unit.
+ensure_ringback() {
+    uctl is-enabled furios-audio-ringback.service >/dev/null 2>&1 && return 0
+    if uctl cat furios-audio-ringback.service >/dev/null 2>&1; then
+        run uctl enable --now furios-audio-ringback.service >/dev/null 2>&1 \
+            && info "outgoing calls now have a ringback tone"
+    fi
+    return 0
+}
+
 # The other half of the safety net: furios-audio-apply.service writes the
 # configuration before the stack, this one checks after it. Enabled the same
 # way - only the user can enable their own unit.
@@ -1026,6 +1041,7 @@ switch_to() {
     ensure_boot_check
     ensure_pause_on_disconnect
     ensure_callaudio_refresh
+    ensure_ringback
     ensure_sco_hold
     ensure_bt_mic
     ensure_bt_reconnect

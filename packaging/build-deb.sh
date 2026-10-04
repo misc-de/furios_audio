@@ -66,6 +66,8 @@ install -Dm755 tools/furios-audio-callaudio-refresh \
     "$STAGE/usr/bin/furios-audio-callaudio-refresh"
 install -Dm755 tools/furios-audio-sco-hold.py \
     "$STAGE/usr/bin/furios-audio-sco-hold"
+install -Dm755 tools/furios-audio-ringback.py \
+    "$STAGE/usr/bin/furios-audio-ringback"
 install -Dm755 tools/furios-audio-bt-mic.py \
     "$STAGE/usr/bin/furios-audio-bt-mic"
 install -Dm755 tools/furios-audio-bt-reconnect.py \
@@ -112,6 +114,8 @@ install -Dm644 furios-audio-callaudio-refresh.service \
     "$STAGE/usr/lib/systemd/user/furios-audio-callaudio-refresh.service"
 install -Dm644 furios-audio-sco-hold.service \
     "$STAGE/usr/lib/systemd/user/furios-audio-sco-hold.service"
+install -Dm644 furios-audio-ringback.service \
+    "$STAGE/usr/lib/systemd/user/furios-audio-ringback.service"
 install -Dm644 furios-audio-bt-mic.service \
     "$STAGE/usr/lib/systemd/user/furios-audio-bt-mic.service"
 install -Dm644 furios-audio-bt-reconnect.service \

@@ -53,6 +53,7 @@ btmic = load(ROOT / "tools" / "furios-audio-bt-mic.py", "bt_mic")
 reconnect = load(ROOT / "tools" / "furios-audio-bt-reconnect.py",
                  "bt_reconnect")
 bluez5fix = load(ROOT / "tools" / "furios-audio-bluez5-fix.py", "bluez5_fix")
+ringback = load(ROOT / "tools" / "furios-audio-ringback.py", "ringback")
 hands_free_sink_real = sco.hands_free_sink
 os_real = sco.os
 
@@ -3266,6 +3267,97 @@ class Bluez5CallIndex(unittest.TestCase):
         self.assertEqual(dirs, ["%t/furios-audio/spa-0.2",
                                 "/usr/lib/@TRIPLET@/spa-0.2"])
         self.assertIn("ExecStartPre=-/usr/bin/furios-audio-bluez5-fix", conf)
+
+class FakeTones:
+    def __init__(self, ok=True):
+        self.ok = ok
+        self.sent = []
+
+    def start(self):
+        self.sent.append("start")
+        return self.ok
+
+    def stop(self):
+        self.sent.append("stop")
+        return True
+
+
+class RingbackPlaysWhileItRings(unittest.TestCase):
+    """2026-10-03: VoLTE sends no ringback (is_ibt=0); the phone makes its own."""
+
+    def setUp(self):
+        self.tones = FakeTones()
+        self.ring = ringback.Ringback(self.tones)
+        out = io.StringIO()
+        self.enterContext(redirect_stdout(out))
+
+    def test_an_outgoing_call_rings_and_is_answered(self):
+        call = "/ril_0/voicecall01"
+        self.ring.update(call, "dialing")
+        self.assertEqual(self.tones.sent, [])          # not before it rings
+        self.ring.update(call, "alerting")
+        self.ring.update(call, "alerting")             # once, not twice
+        self.assertEqual(self.tones.sent, ["start"])
+        self.ring.update(call, "active")
+        self.assertEqual(self.tones.sent, ["start", "stop"])
+
+    def test_nobody_answers_and_the_call_is_gone(self):
+        # tonegend plays until told: a call that vanishes must stop it.
+        self.ring.update("/ril_0/voicecall01", "alerting")
+        self.ring.update("/ril_0/voicecall01", None)
+        self.assertEqual(self.tones.sent, ["start", "stop"])
+
+    def test_an_incoming_call_never_rings_back(self):
+        self.ring.update("/ril_0/voicecall01", "incoming")
+        self.ring.update("/ril_0/voicecall01", "active")
+        self.assertEqual(self.tones.sent, [])
+
+    def test_a_second_call_ringing_keeps_it_on(self):
+        self.ring.update("/ril_0/voicecall01", "alerting")
+        self.ring.update("/ril_0/voicecall02", "held")
+        self.assertEqual(self.tones.sent, ["start"])
+
+    def test_tonegend_not_there_is_tried_again(self):
+        self.tones.ok = False
+        self.ring.update("/ril_0/voicecall01", "alerting")
+        self.assertFalse(self.ring.playing)
+        self.tones.ok = True
+        self.ring.update("/ril_0/voicecall01", "alerting")
+        self.assertTrue(self.ring.playing)
+
+    def test_ofono_going_away_mid_ring_stops_it(self):
+        self.ring.update("/ril_0/voicecall01", "alerting")
+        self.ring.reset({})
+        self.assertEqual(self.tones.sent, ["start", "stop"])
+
+    def test_a_restart_mid_ring_picks_it_up(self):
+        self.ring.reset({"/ril_0/voicecall01": "alerting"})
+        self.assertEqual(self.tones.sent, ["start"])
+
+    def test_the_way_out_stops_it(self):
+        self.ring.update("/ril_0/voicecall01", "alerting")
+        self.ring.quiet()
+        self.ring.quiet()
+        self.assertEqual(self.tones.sent, ["start", "stop"])
+
+
+class RingbackAsksOfono(unittest.TestCase):
+    def test_states_of_calls_already_up(self):
+        class Bus(OfonoBus):
+            def call_sync(self, dest, path, iface, method, *rest):
+                if method == "GetCalls":
+                    return FakeVariant([[("/ril_0/voicecall01",
+                                          {"State": "alerting"})]])
+                return super().call_sync(dest, path, iface, method, *rest)
+        self.assertEqual(ringback.existing_calls(Bus(modems=["/ril_0"])),
+                         {"/ril_0/voicecall01": "alerting"})
+
+    def test_an_ofono_that_does_not_answer_is_survived(self):
+        out = io.StringIO()
+        with redirect_stdout(out):
+            found = ringback.existing_calls(OfonoBus(fail={"GetModems"}))
+        self.assertEqual(found, {})
+
 
 if __name__ == "__main__":
     # Built by hand rather than through unittest.main(), which looks for tests

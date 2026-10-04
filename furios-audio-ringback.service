@@ -1,0 +1,23 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 misc-de
+# SPDX-License-Identifier: MIT
+[Unit]
+# The ringback tone for outgoing calls on networks that send none (VoLTE
+# here). tonegend plays it; this only tells it when.
+Description=Play the ringback tone while an outgoing call rings
+PartOf=graphical-session.target
+Wants=tone-generator.service
+After=tone-generator.service
+
+# See furios-audio-sco-hold.service: backoff instead of giving up.
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/furios-audio-ringback
+Restart=on-failure
+RestartSec=5
+RestartSteps=5
+RestartMaxDelaySec=300
+
+[Install]
+WantedBy=graphical-session.target
