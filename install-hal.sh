@@ -27,8 +27,11 @@ orig_install 644 "$PLUGIN" "$SPA_DIR/libspa-droid.so"
 
 # Record the PipeWire version this was built against. If an update breaks the
 # SPA interface, pw-hal would otherwise go silent without a word - audioctl
-# now warns beforehand.
-BUILT_AGAINST=$(pkg-config --modversion libpipewire-0.3 2>/dev/null || echo unknown)
+# now warns beforehand. Not pkg-config alone: see tools/pw-version.sh.
+# shellcheck source=tools/pw-version.sh
+. tools/pw-version.sh
+BUILT_AGAINST=$(pw_version)
+[ -n "$BUILT_AGAINST" ] || BUILT_AGAINST=unknown
 echo "$BUILT_AGAINST" | orig_install_stdin 644 "$SPA_DIR/built-against"
 echo "   built against PipeWire $BUILT_AGAINST"
 

@@ -222,6 +222,19 @@ check "the server names itself" "PulseAudio (on PipeWire 1.6.6)" \
 stub pactl 1 ""
 check "and when nothing answers it says so" "not reachable" \
     "$(with_audioctl 'pulse_owner')"
+# A pactl that answers in German unless it is asked in C - what a phone set to
+# de_DE does. The server was running and status said "not reachable"
+# (4.10.2026).
+cat > "$STUBDIR/pactl" <<'STUB'
+#!/bin/sh
+case "${LC_ALL:-${LC_MESSAGES:-${LANG:-}}}" in
+C|C.*|POSIX) echo "Server Name: PulseAudio (on PipeWire 1.6.6)" ;;
+*)           echo "Servername: PulseAudio (on PipeWire 1.6.6)" ;;
+esac
+STUB
+chmod +x "$STUBDIR/pactl"
+check "a phone set to German still finds its server" "PulseAudio (on PipeWire 1.6.6)" \
+    "$(LANG=de_DE.UTF-8 LC_ALL=de_DE.UTF-8 with_audioctl 'pulse_owner')"
 
 # --- the version guards ----------------------------------------------------
 #
@@ -683,6 +696,14 @@ stub pkg-config 0 "1.7.0"
 check "a plugin built against another PipeWire is called out" "yes" \
     "$(with_audioctl 'PLUGIN_DIR="$STUBDIR"; echo 1.6.6 > "$STUBDIR/built-against"
         plugin_version_check 2>&1 | grep -q "WARNING" && echo yes || echo no')"
+# An install-hal.sh that could not tell wrote "unknown" (4.10.2026): that is a
+# version nobody recorded, not one that disagrees.
+check "an unrecorded version is not called a mismatch" "no" \
+    "$(with_audioctl 'PLUGIN_DIR="$STUBDIR"; echo unknown > "$STUBDIR/built-against"
+        plugin_version_check 2>&1 | grep -q "WARNING" && echo yes || echo no')"
+check "and it says how to record it" "yes" \
+    "$(with_audioctl 'PLUGIN_DIR="$STUBDIR"; echo unknown > "$STUBDIR/built-against"
+        plugin_version_check 2>&1 | grep -q "install-hal.sh again" && echo yes || echo no')"
 # The AAC module lives wherever pkg-config says PipeWire's libdir is, so the
 # stub points that at the temporary directory.
 cat > "$STUBDIR/pkg-config" <<STUB

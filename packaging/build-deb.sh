@@ -24,7 +24,13 @@ fi
 
 ARCH=$(dpkg --print-architecture)
 TRIPLET=$(dpkg-architecture -qDEB_HOST_MULTIARCH)
-PWVER=$(pkg-config --modversion libpipewire-0.3 2>/dev/null || echo 1.6.6)
+# Never a fixed fallback: a package that claims a version it was not built
+# against hides exactly the mismatch built-against is there to show, and the
+# Depends line below would pin PipeWire to the guess.
+# shellcheck source=tools/pw-version.sh
+. tools/pw-version.sh
+PWVER=$(pw_version)
+[ -n "$PWVER" ] || { echo "cannot tell which PipeWire this builds against - install libspa-0.2-dev" >&2; exit 1; }
 # The commit COUNT leads the version, not the commit date and not the hash.
 # dpkg compares digit runs numerically and everything else as text, so a hash
 # decides the order between two builds - and hashes are not monotonic. A dirty

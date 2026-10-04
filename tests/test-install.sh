@@ -155,4 +155,35 @@ run_postinst "$T/b"
 check "a dangling link creates nothing" no \
     "$([ -e "$T/created-by-root" ] && echo yes || echo no)"
 
+
+echo
+echo "-- the version a plugin is built against, without libpipewire-0.3-dev"
+# pw_version with stand-ins for pkg-config, dpkg-query and pipewire. The FLX1
+# that wrote "unknown" (4.10.2026) had libspa-0.2-dev but no libpipewire-0.3-dev.
+pwv() {
+    # pwv <pkg-config answer|-> <dpkg-query answer|-> <pipewire answer|->
+    local d="$T/pwv.$RANDOM" tool answer
+    mkdir -p "$d"
+    for tool in pkg-config dpkg-query pipewire; do
+        answer=$1; shift
+        if [ "$answer" = - ]; then
+            printf '#!/bin/sh\nexit 1\n' > "$d/$tool"
+        else
+            printf '#!/bin/sh\nprintf "%%s\\n" "%s"\n' "$answer" > "$d/$tool"
+        fi
+        chmod +x "$d/$tool"
+    done
+    ( PATH="$d:$PATH"; . "$ROOT/tools/pw-version.sh"; pw_version )
+}
+check "pkg-config first, when it knows" 1.6.6 "$(pwv 1.6.6 1.5.0-1 -)"
+check "the libspa headers' package without libpipewire-0.3-dev" 1.6.6 "$(pwv - 1.6.6-1 -)"
+check "an epoch and a Debian revision are not part of it" 1.6.6 "$(pwv - 2:1.6.6-1+b2 -)"
+check "the compiled-in version as the last answer" 1.6.6 \
+    "$(pwv - - 'Compiled with libpipewire 1.6.6')"
+check "nothing at all is nothing, not a guess" "" "$(pwv - - -)"
+check "install-hal.sh asks pw_version" yes "$(contains install-hal.sh 'pw_version')"
+check "the package build asks pw_version" yes "$(contains packaging/build-deb.sh 'pw_version')"
+check "and the package has no fixed version to fall back on" no \
+    "$(contains packaging/build-deb.sh '|| echo 1\.')"
+
 summary

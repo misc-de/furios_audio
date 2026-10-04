@@ -13,6 +13,15 @@
 
 set -u
 
+# Every tool whose output is read here answers in one language. pactl info
+# says "Servername:" on a German phone, and the "Server Name: " this looked
+# for was never there - status said "Pulse server not reachable" on an FLX1
+# set to de_DE whose server was running fine (4.10.2026), and the app showed
+# the same. Nothing this starts shows text to anybody (the one process left
+# running is paplay playing silence), so the whole script is set rather than
+# each call: the next parse somebody adds cannot forget it.
+export LC_ALL=C.UTF-8
+
 # Overridable so the tests can run the real dispatcher without writing into
 # the state of the phone they are running on.
 STATE_DIR=${AUDIOCTL_STATE_DIR:-/var/lib/furios-audio}
@@ -459,6 +468,14 @@ plugin_version_check() {
     local dir=$PLUGIN_DIR built now
     [ -r "$dir/built-against" ] || return 0
     built=$(cat "$dir/built-against")
+    if [ "$built" = unknown ] || [ -z "$built" ]; then
+        # Written by an install-hal.sh that could not tell (before
+        # tools/pw-version.sh). Not a mismatch, and not a reason for "If
+        # there is no sound" at every switch: the version is simply missing.
+        printf 'NOTE: the plugin does not record which PipeWire it was built against.\n' >&2
+        printf '      Run ./install-hal.sh again in the project directory to record it.\n' >&2
+        return 0
+    fi
     now=$(pkg-config --modversion libpipewire-0.3 2>/dev/null)
     [ -n "$now" ] || now=$(pipewire --version 2>/dev/null | sed -n 's/.*libpipewire \([0-9.]*\).*/\1/p' | head -1)
     [ -n "$now" ] || return 0
