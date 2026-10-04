@@ -3341,6 +3341,74 @@ class RingbackPlaysWhileItRings(unittest.TestCase):
         self.assertEqual(self.tones.sent, ["start", "stop"])
 
 
+class RingbackListensToTheModem(unittest.TestCase):
+    """is_ibt from +ECPI: a network that sends its own tone is left to it."""
+
+    def setUp(self):
+        self.tones = FakeTones()
+        self.later = []
+        self.ring = ringback.Ringback(self.tones,
+                                      later=lambda ms, fn: self.later.append(fn))
+        self.enterContext(redirect_stdout(io.StringIO()))
+
+    def settle(self):
+        for fn in self.later:
+            fn()
+        self.later = []
+
+    def test_the_line_is_read(self):
+        self.assertEqual(ringback.parse_ecpi(
+            b"\x04RmcCCBaseHandler\x00[0] AT< +ECPI: 1, 2, 0, 1, 0, 20, +49"),
+            (1, 2, 0))
+        self.assertIsNone(ringback.parse_ecpi(b"\x04RPC\x00entry g_lowpower_mode"))
+
+    def test_no_tone_from_the_network_plays_ours(self):
+        # 2026-10-03 19:47:46: +ECPI: 1, 2, 0, ... - alerting, no in-band tone
+        self.ring.update("/ril_0/voicecall01", "alerting")
+        self.ring.ecpi(1, 2, 0)
+        self.assertEqual(self.tones.sent, [])          # waits for the word
+        self.settle()
+        self.assertEqual(self.tones.sent, ["start"])
+
+    def test_the_network_tone_is_left_alone(self):
+        self.ring.update("/ril_0/voicecall01", "alerting")
+        self.ring.ecpi(1, 2, 1)
+        self.settle()
+        self.assertEqual(self.tones.sent, [])
+
+    def test_the_modem_reporting_before_ofono_counts_too(self):
+        self.ring.update("/ril_0/voicecall01", "dialing")
+        self.ring.ecpi(1, 2, 1)
+        self.ring.update("/ril_0/voicecall01", "alerting")
+        self.settle()
+        self.assertEqual(self.tones.sent, [])
+
+    def test_early_media_starting_mid_ring_stops_ours(self):
+        self.ring.update("/ril_0/voicecall01", "alerting")
+        self.settle()
+        self.ring.ecpi(1, 5, 1)                        # progress, in-band now
+        self.assertEqual(self.tones.sent, ["start", "stop"])
+
+    def test_without_the_modems_word_it_plays(self):
+        self.ring.update("/ril_0/voicecall01", "alerting")
+        self.settle()
+        self.assertEqual(self.tones.sent, ["start"])
+
+    def test_other_messages_say_nothing_about_the_tone(self):
+        self.ring.update("/ril_0/voicecall01", "alerting")
+        self.ring.ecpi(1, 130, 1)                      # call id assigned
+        self.settle()
+        self.assertEqual(self.tones.sent, ["start"])
+
+    def test_the_next_call_starts_without_the_last_ones_word(self):
+        self.ring.update("/ril_0/voicecall01", "alerting")
+        self.ring.ecpi(1, 2, 1)
+        self.ring.update("/ril_0/voicecall01", None)
+        self.ring.update("/ril_0/voicecall02", "alerting")
+        self.settle()
+        self.assertEqual(self.tones.sent, ["start"])
+
+
 class RingbackAsksOfono(unittest.TestCase):
     def test_states_of_calls_already_up(self):
         class Bus(OfonoBus):
