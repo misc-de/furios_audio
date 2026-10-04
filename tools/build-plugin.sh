@@ -60,8 +60,27 @@ else
 fi
 
 echo "   upstream droid sources"
-if [ -d "$SOURCES/src/common" ]; then
-    echo "      already here - left exactly as they are"
+if [ -d "$SOURCES/src/common" ] && [ -d "$SOURCES/.git" ]; then
+    # The generator rewrites these sources by exact text (port-droid-util.py)
+    # and needs them as upstream has them at $COMMIT. A hand edit left in
+    # them - one made while trying a fix, before it went into the generator
+    # (4.10.2026: the Voice Call In route filter, in droid-util.c since 1.10.)
+    # - made every later build fail with "not found: <statement block>". So
+    # anything changed is saved next to them as a patch and the checkout put
+    # back: nothing is lost, and the build gets what it was written for.
+    changed=$(git -C "$SOURCES" status --porcelain --untracked-files=no)
+    at=$(git -C "$SOURCES" rev-parse --short HEAD 2>/dev/null)
+    if [ -n "$changed" ] || [ "${at:0:7}" != "${COMMIT:0:7}" ]; then
+        saved="$SOURCES.local-changes-$(date +%Y%m%d-%H%M%S).patch"
+        git -C "$SOURCES" diff > "$saved"
+        [ -s "$saved" ] || rm -f "$saved"
+        git -C "$SOURCES" checkout --quiet --force "$COMMIT"
+        echo "      put back to $COMMIT${changed:+ - local changes saved in $saved}"
+    else
+        echo "      already here, at $COMMIT"
+    fi
+elif [ -d "$SOURCES/src/common" ]; then
+    echo "      already here, not a git checkout - left exactly as they are"
 else
     git clone "$UPSTREAM" "$SOURCES"
     git -C "$SOURCES" checkout --quiet "$COMMIT"
