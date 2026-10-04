@@ -857,16 +857,29 @@ ensure_sco_hold() {
 
 # Outgoing calls on VoLTE rang in silence: the network sends no ringback tone
 # (the modem says so, is_ibt=0) and nothing here made one. tonegend can, and
-# this service tells it when. Not tied to a profile - tonegend plays through
-# whichever sound server runs. Like the others, only the user can enable
-# their own unit.
-ensure_ringback() {
-    uctl is-enabled furios-audio-ringback.service >/dev/null 2>&1 && return 0
-    if uctl cat furios-audio-ringback.service >/dev/null 2>&1; then
-        run uctl enable --now furios-audio-ringback.service >/dev/null 2>&1 \
-            && info "outgoing calls now have a ringback tone"
-    fi
-    return 0
+# furios-audio-ringback tells it when. An option like any other: off after an
+# install, on only when the user switches it on - so no profile switch touches
+# it, and whether the unit is enabled is the whole of its state. Not tied to a
+# profile either: tonegend plays through whichever sound server runs.
+# audioctl ringback [status|on|off]
+ringback() {
+    local want=${1:-status} u=furios-audio-ringback.service
+    case "$want" in
+    status)
+        printf 'ringback=%s\n' "$(uctl is-enabled "$u" >/dev/null 2>&1 && echo on || echo off)"
+        printf 'available=%s\n' "$(uctl cat "$u" >/dev/null 2>&1 && echo yes || echo no)"
+        ;;
+    on)
+        uctl cat "$u" >/dev/null 2>&1 || die "furios-audio-ringback is not installed"
+        run uctl enable --now "$u" >/dev/null 2>&1 || die "could not switch the ringback tone on"
+        info "outgoing calls now have a ringback tone"
+        ;;
+    off)
+        run uctl disable --now "$u" >/dev/null 2>&1 || true
+        info "no ringback tone - only what the network sends"
+        ;;
+    *) die "ringback needs on, off or status" ;;
+    esac
 }
 
 # The other half of the safety net: furios-audio-apply.service writes the
@@ -1041,7 +1054,6 @@ switch_to() {
     ensure_boot_check
     ensure_pause_on_disconnect
     ensure_callaudio_refresh
-    ensure_ringback
     ensure_sco_hold
     ensure_bt_mic
     ensure_bt_reconnect
@@ -1970,6 +1982,9 @@ audioctl - switch the audio stack
                                Bluetooth helpers outside pw-hal: pause on
                                disconnect and reconnect, the two that need no
                                WirePlumber (under pw-hal all of them run)
+  audioctl ringback [status|on|off]
+                               the ringback tone for outgoing calls on
+                               networks that send none (off until switched on)
   audioctl bt-codec <codec> --device <address>
                                the same for one headset only; "default" makes
                                it follow the setting for all again
@@ -2086,6 +2101,7 @@ case "${1:-status}" in
     # For ExecCondition: exit 0 when the stored profile is the one named.
     helper-allowed) [ $# -ge 2 ] || die "unit missing."; helper_allowed "$2" ;;
     bt-extras) bt_extras "${2:-status}" ;;
+    ringback)  ringback "${2:-status}" ;;
     is)     [ $# -ge 2 ] || die "profile missing."
             [ "$(current_profile 2>/dev/null)" = "$2" ] ;;
     try)    [ $# -ge 2 ] || die "profile missing."; switch_to "$2" try ;;

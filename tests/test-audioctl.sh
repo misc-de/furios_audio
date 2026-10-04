@@ -1714,6 +1714,26 @@ rm -f "$STUBDIR/state/bt-extras"
 check "without a choice a switch to PulseAudio stops them all" "yes" \
     "$(grep -qx -- '--user stop furios-audio-bt-reconnect.service' "$STUBDIR/systemctl.log" && echo yes || echo no)"
 check_status "an unknown word is refused" 1 run_ctl bt-extras maybe
+
+printf '\nthe ringback tone is an option: off until switched on\n'
+stub_logging_systemctl
+check "an unenabled unit reads as off" "ringback=off" "$(run_ctl ringback | grep ringback=)"
+check "and the unit being there as available" "available=yes" "$(run_ctl ringback | grep available)"
+: > "$STUBDIR/systemctl.log"
+run_ctl set pw-hal >/dev/null 2>&1
+check "no profile switch switches it on (rule of 16.9.: nothing is on after an install)" "" \
+    "$(grep -- 'furios-audio-ringback' "$STUBDIR/systemctl.log")"
+: > "$STUBDIR/systemctl.log"
+run_ctl ringback on >/dev/null
+check "on enables and starts it" "yes" \
+    "$(grep -qx -- '--user enable --now furios-audio-ringback.service' "$STUBDIR/systemctl.log" && echo yes || echo no)"
+: > "$STUBDIR/systemctl.log"
+run_ctl ringback off >/dev/null
+check "off disables and stops it" "yes" \
+    "$(grep -qx -- '--user disable --now furios-audio-ringback.service' "$STUBDIR/systemctl.log" && echo yes || echo no)"
+stub_systemctl none furios-audio-ringback.service
+check "an enabled unit reads as on" "ringback=on" "$(run_ctl ringback | grep ringback=)"
+check_status "an unknown word is refused" 1 run_ctl ringback maybe
 rm -f "$STUBDIR/systemctl"
 
 summary
