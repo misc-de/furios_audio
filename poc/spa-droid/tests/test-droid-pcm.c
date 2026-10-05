@@ -1343,17 +1343,65 @@ static void test_buffer_size(void)
 	p = spa_pod_find_prop(emitted.last_param, NULL, SPA_PARAM_BUFFERS_size);
 	if (p)
 		spa_pod_get_int(&p->value, &size);
-	check_int("with no stream open it falls back to a HAL period", 4096, size);
+	/* Sized for the quantum it ran at, the buffer overflowed as soon as the
+	 * graph doubled it - and that took the whole daemon down. */
+	check_int("it holds the largest quantum the graph may run", 8192 * 4, size);
 
 	negotiate(this, 48000, 2);
-	this->quantum = 2048;
+	this->quantum = 256;
 	enum_params(this, SPA_PARAM_Buffers, NULL);
 	p = spa_pod_find_prop(emitted.last_param, NULL, SPA_PARAM_BUFFERS_size);
 	if (p)
 		spa_pod_get_int(&p->value, &size);
-	check_int("a larger graph quantum wins - the HAL period is not the graph's",
-			2048 * 4, size);
+	check_int("the quantum running now does not shrink it", 8192 * 4, size);
 
+	spa_hook_remove(&listener);
+	free_node(this);
+}
+
+static void test_buffer_size_limit(void)
+{
+	static struct spa_dict_item items[] = {
+		SPA_DICT_ITEM_INIT("droid.config", TEST_FIXTURE),
+		SPA_DICT_ITEM_INIT("clock.quantum-limit", "4096"),
+	};
+	static struct spa_dict_item silly[] = {
+		SPA_DICT_ITEM_INIT("droid.config", TEST_FIXTURE),
+		SPA_DICT_ITEM_INIT("clock.quantum-limit", "7"),
+	};
+	struct spa_dict d = SPA_DICT_INIT(items, SPA_N_ELEMENTS(items));
+	struct spa_dict ds = SPA_DICT_INIT(silly, SPA_N_ELEMENTS(silly));
+	struct impl *this;
+	struct spa_hook listener = { 0 };
+	const struct spa_pod_prop *p;
+	int32_t size = 0;
+
+	section("the buffer follows the daemon's quantum limit");
+	reset_all();
+	this = make_node(false, &d);
+	if (!check("the node is there", this != NULL))
+		return;
+	spa_node_add_listener(&this->node, &listener, &node_events, NULL);
+	negotiate(this, 48000, 2);
+	enum_params(this, SPA_PARAM_Buffers, NULL);
+	p = spa_pod_find_prop(emitted.last_param, NULL, SPA_PARAM_BUFFERS_size);
+	if (p)
+		spa_pod_get_int(&p->value, &size);
+	check_int("clock.quantum-limit from the properties sets the size", 4096 * 4, size);
+	spa_hook_remove(&listener);
+	free_node(this);
+
+	reset_all();
+	this = make_node(false, &ds);
+	if (!check("a nonsense limit still gives a node", this != NULL))
+		return;
+	spa_node_add_listener(&this->node, &listener, &node_events, NULL);
+	negotiate(this, 48000, 2);
+	enum_params(this, SPA_PARAM_Buffers, NULL);
+	p = spa_pod_find_prop(emitted.last_param, NULL, SPA_PARAM_BUFFERS_size);
+	if (p)
+		spa_pod_get_int(&p->value, &size);
+	check_int("and falls back to PipeWire's default limit", 8192 * 4, size);
 	spa_hook_remove(&listener);
 	free_node(this);
 }
@@ -2678,8 +2726,8 @@ static void test_more_params(void)
 	p = spa_pod_find_prop(emitted.last_param, NULL, SPA_PARAM_BUFFERS_size);
 	if (p)
 		spa_pod_get_int(&p->value, &size);
-	check_int("before the first cycle the graph's own quantum decides",
-			2048 * 4, size);
+	check_int("before the first cycle the graph's quantum does not shrink it either",
+			8192 * 4, size);
 
 	spa_pod_builder_init(&b, buf, sizeof(buf));
 	{
@@ -2748,6 +2796,7 @@ int main(void)
 	test_voice_volume();
 	test_listener_and_params();
 	test_buffer_size();
+	test_buffer_size_limit();
 	test_set_format();
 	test_io_areas();
 	test_use_buffers();

@@ -77,6 +77,7 @@ static void registry_remove(struct impl *this);
 #define RING_SIZE       (1u << 18)   /* 256 kB, power of two as spa_ringbuffer needs */
 #define DEFAULT_RATE    48000
 #define DEFAULT_CHANNELS 2
+#define DEFAULT_QUANTUM_LIMIT 8192   /* PipeWire's default.clock.quantum-limit */
 
 struct port {
 	uint32_t id;
@@ -157,6 +158,7 @@ struct impl {
 	uint64_t next_time;
 	uint64_t period_ns;
 	uint32_t quantum;
+	uint32_t quantum_limit;  /* the largest quantum the graph may ever run */
 	uint32_t rate;
 
 	/* instrumentation of the data path */
@@ -1202,22 +1204,22 @@ next:
 		break;
 	case SPA_PARAM_Buffers:
 	{
-		/* The buffer must hold one GRAPH quantum, not one HAL period. On the
-		 * output side both happen to be the same size (4096 B), on the input
-		 * side they are not: the HAL delivers 3840 B while the graph wants
-		 * 4096 B. Too small a buffer makes the adapter work with a partial
-		 * quantum. */
+		/* The buffer must hold the LARGEST quantum the graph may run, not
+		 * the one it runs now and not one HAL period. Buffers are sized once,
+		 * at negotiation, while the quantum moves at any time - a client that
+		 * asks for more latency, or one with less that leaves. Sized for 1024
+		 * frames, the sink ran at 2048, and audioconvert (PipeWire 1.6.6)
+		 * clamps what it outputs to the buffer but still converts the whole
+		 * quantum into it: 8192 B into 4096, the overflow zeroed the next
+		 * buffer's header, and the daemon died on it a few cycles later
+		 * (core dumps of 5.10.2026, audioconvert.c:4011). PipeWire's own ALSA
+		 * nodes size by clock.quantum-limit for the same reason. */
 		uint32_t stride = 2 * port->current_format.info.raw.channels;
-		uint32_t q = this->quantum;
 		size_t size;
 
 		if (!port->have_format)
 			return -EIO;
-		if (q == 0 && this->position)
-			q = this->position->clock.target_duration;
-		if (q == 0)
-			q = 1024;
-		size = SPA_MAX((size_t) q * stride,
+		size = SPA_MAX((size_t) this->quantum_limit * stride,
 				this->stream ? pa_droid_stream_buffer_size(this->stream) : 4096);
 		if (result.index > 0)
 			return 0;
@@ -1693,7 +1695,11 @@ static int impl_init(const struct spa_handle_factory *factory,
 	 * 16 kHz, the primary one at 48. */
 	this->pref_rate = DEFAULT_RATE;
 	this->pref_channels = DEFAULT_CHANNELS;
+	this->quantum_limit = DEFAULT_QUANTUM_LIMIT;
 	if (info) {
+		/* Set by PipeWire's adapter from the daemon's settings. */
+		if ((str = spa_dict_lookup(info, "clock.quantum-limit")))
+			spa_atou32(str, &this->quantum_limit, 10);
 		if ((str = spa_dict_lookup(info, "audio.rate")))
 			spa_atou32(str, &this->pref_rate, 10);
 		if ((str = spa_dict_lookup(info, "audio.channels")))
@@ -1703,6 +1709,8 @@ static int impl_init(const struct spa_handle_factory *factory,
 		this->pref_rate = DEFAULT_RATE;
 	if (this->pref_channels < 1 || this->pref_channels > 2)
 		this->pref_channels = DEFAULT_CHANNELS;
+	if (this->quantum_limit < 1024 || this->quantum_limit > 65536)
+		this->quantum_limit = DEFAULT_QUANTUM_LIMIT;
 
 	/* Vendor options for the HAL module. See hal_open() for the default. */
 	str = info ? spa_dict_lookup(info, "droid.hw-options") : NULL;
