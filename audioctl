@@ -133,8 +133,19 @@ PWMODULE_DIR=${AUDIOCTL_PW_MODULE_DIR:-/usr/lib/aarch64-linux-gnu/pipewire-0.3}
 # WirePlumber starts (tools/furios-audio-bluez5-fix.py). Its --check says what
 # the next WirePlumber start will do with the library installed NOW - which is
 # what status has to show after a PipeWire update, before anybody restarts.
-BLUEZ5_FIX=${AUDIOCTL_BLUEZ5_FIX:-$(first_existing /usr/local/bin/furios-audio-bluez5-fix \
+# Next to this file in the work tree first, like ORIG_LIB below: an older
+# installed helper has no --check and would do its WirePlumber-start job.
+BLUEZ5_FIX=${AUDIOCTL_BLUEZ5_FIX:-$(first_existing "$(dirname "${BASH_SOURCE[0]}")/tools/furios-audio-bluez5-fix.py" \
+                                                   /usr/local/bin/furios-audio-bluez5-fix \
                                                    /usr/bin/furios-audio-bluez5-fix)}
+# The work tree's copy is not executable; the installed ones are.
+bluez5_fix_check() {
+    [ -e "$BLUEZ5_FIX" ] || return 1
+    case "$BLUEZ5_FIX" in
+    *.py) python3 "$BLUEZ5_FIX" --check 2>/dev/null ;;
+    *)    "$BLUEZ5_FIX" --check 2>/dev/null ;;
+    esac
+}
 
 PROFILES="standard pw-tunnel pw-hal"
 DRY=0
@@ -308,10 +319,25 @@ legacy_droid_off() {
 # furios-quirks-device, and a mask of any origin is covered by a copy under
 # $HOME (see shadow_write) - removing one is never needed and, for a package
 # file, wrong.
+# The AAC module an older tools/build-bluez5-aac.sh installed with sudo
+# beside Debian's codecs, with its version note. It is loaded whatever
+# PipeWire it was built for; the module now lives under the user's
+# ~/.local/share. A file a package owns is Debian's, never a leftover.
+LEGACY_SPA=${AUDIOCTL_LEGACY_SPA:-/usr/lib/aarch64-linux-gnu/spa-0.2/bluez5}
+legacy_aac() {
+    out=
+    for f in "$LEGACY_SPA/libspa-codec-bluez5-aac.so" "$LEGACY_SPA/aac-built-against"; do
+        [ -e "$f" ] || continue
+        dpkg -S "$f" >/dev/null 2>&1 && continue
+        out="$out $f"
+    done
+    printf '%s' "${out# }"
+}
 legacy_leftovers() {
     out=
     f=$(legacy_dropin);    [ -n "$f" ] && out="$out $f"
     f=$(legacy_droid_off); [ -n "$f" ] && out="$out $f"
+    f=$(legacy_aac);       [ -n "$f" ] && out="$out $f"
     printf '%s' "${out# }"
 }
 
@@ -402,6 +428,7 @@ migrate_legacy() {
     for f in $left; do
         case "$f" in
         "$LEGACY_ETCU"/*|*/wireplumber.conf.d/50-droid.conf.off) ;;
+        "$LEGACY_SPA"/libspa-codec-bluez5-aac.so|"$LEGACY_SPA"/aac-built-against) ;;
         *) warn "refusing to touch $f"; continue ;;
         esac
         if [ "${f%.off}" != "$f" ]; then
@@ -498,21 +525,29 @@ plugin_version_check() {
 # The hand-built AAC codec module has the same problem, for Bluetooth.
 #
 # Debian ships no AAC module, so most earbuds fall back to SBC - see
-# tools/build-bluez5-aac.sh. That module is built against PipeWire's internal
-# codec interface; after an update it may simply stop loading, and the only
-# symptom would be that Bluetooth music quietly sounds worse than yesterday.
+# tools/build-bluez5-aac.sh. That module is built against libspa-bluez5's
+# internal codec interface. It lives under the user's ~/.local/share, and
+# furios-audio-bluez5-fix offers it to WirePlumber only while the
+# libspa-bluez5.so it was built for is the installed one - so a stale module
+# is never loaded; this only says why AAC is gone. And it names a module an
+# older build script left in the system directory, which IS loaded whatever
+# its age.
 aac_version_check() {
-    local dir built now
-    dir=$(pkg-config --variable=libdir libpipewire-0.3 2>/dev/null)/spa-0.2/bluez5
-    [ -r "$dir/aac-built-against" ] || return 0
-    built=$(cat "$dir/aac-built-against")
-    now=$(pkg-config --modversion libpipewire-0.3 2>/dev/null)
-    [ -n "$now" ] || return 0
-    if [ "$built" != "$now" ]; then
-        printf 'NOTE: the Bluetooth AAC module was built against PipeWire %s, installed is %s.\n' \
-            "$built" "$now" >&2
-        printf '      Bluetooth music falls back to SBC until it is rebuilt:\n' >&2
+    local out state reason legacy
+    [ -e "$BLUEZ5_FIX" ] || return 0
+    out=$(bluez5_fix_check) || return 0
+    state=$(printf '%s\n' "$out" | sed -n 's/^aac=//p' | head -1)
+    reason=$(printf '%s\n' "$out" | sed -n 's/^aac-reason=//p' | head -1)
+    legacy=$(printf '%s\n' "$out" | sed -n 's/^aac-legacy=//p' | head -1)
+    if [ "$state" = stale ]; then
+        printf 'NOTE: the Bluetooth AAC module is not loaded: %s.\n' "$reason" >&2
+        printf '      Bluetooth music uses SBC until it is rebuilt:\n' >&2
         printf '      ./tools/build-bluez5-aac.sh\n' >&2
+    fi
+    if [ -n "$legacy" ]; then
+        printf 'NOTE: an AAC module from an older build is in %s\n' "$legacy" >&2
+        printf '      and is loaded whatever PipeWire it was built for. Once:\n' >&2
+        printf '      sudo audioctl migrate\n' >&2
     fi
     return 0
 }
@@ -2052,11 +2087,12 @@ ofono_dropin_conflict() {
 
 # One line for status: is the +CLCC fix going to be in the plugin? Prints
 # "applied", "not-applied <reason>" or nothing when the helper is not
-# installed (then there is no drop-in either, and nothing to report).
+# installed (then there is no drop-in either, and nothing to report). Takes
+# the helper's --check output when the caller already has it.
 bluez5_fix_status() {
     local out state reason
-    [ -x "$BLUEZ5_FIX" ] || return 0
-    out=$("$BLUEZ5_FIX" --check 2>/dev/null) || true
+    [ -e "$BLUEZ5_FIX" ] || return 0
+    out=${1-$(bluez5_fix_check)} || true
     state=$(printf '%s\n' "$out" | sed -n 's/^clcc=//p' | head -1)
     reason=$(printf '%s\n' "$out" | sed -n 's/^clcc-reason=//p' | head -1)
     case "$state" in
@@ -2064,6 +2100,25 @@ bluez5_fix_status() {
     not-applied) printf 'not-applied %s' "${reason:-unknown reason}" ;;
     *)           printf 'not-applied the helper gave no answer' ;;
     esac
+}
+
+# The same for the AAC module: "loaded", "stale <reason>", "absent", or
+# nothing without the helper. A module left in the system directory by an
+# older build comes on a second line as "legacy <path>".
+aac_status() {
+    local out state reason legacy
+    [ -e "$BLUEZ5_FIX" ] || return 0
+    out=${1-$(bluez5_fix_check)} || true
+    state=$(printf '%s\n' "$out" | sed -n 's/^aac=//p' | head -1)
+    reason=$(printf '%s\n' "$out" | sed -n 's/^aac-reason=//p' | head -1)
+    legacy=$(printf '%s\n' "$out" | sed -n 's/^aac-legacy=//p' | head -1)
+    case "$state" in
+    loaded|absent) printf '%s' "$state" ;;
+    stale)         printf 'stale %s' "${reason:-unknown reason}" ;;
+    *)             printf 'absent' ;;
+    esac
+    [ -n "$legacy" ] && printf '\nlegacy %s' "$legacy"
+    return 0
 }
 
 STATUS_UNITS="pulseaudio.service pipewire.service pipewire-pulse.service wireplumber.service furios-pw-tunnel.service"
@@ -2077,7 +2132,7 @@ json_str() {
 # For the app: the same answers as "status", as JSON, so the window does not
 # depend on how a line for people is worded.
 status_json() {
-    local eff rec sticky fell sinks u first=1 conflict bz
+    local eff rec sticky fell sinks u first=1 conflict bz aac chk
     eff=$(effective_profile)
     rec=$(current_profile)
     sticky=$(cat "$STICKY" 2>/dev/null || echo standard)
@@ -2091,8 +2146,11 @@ status_json() {
     printf '  "fell_back": %s,\n' "$([ -n "$fell" ] && json_str "$fell" || echo null)"
     printf '  "ofono_dropin_conflict": %s,\n' "$([ -n "$conflict" ] && json_str "$conflict" || echo null)"
     printf '  "pulse_server": %s,\n' "$(json_str "$(pulse_owner)")"
-    bz=$(bluez5_fix_status)
+    chk=$(bluez5_fix_check)
+    bz=$(bluez5_fix_status "$chk")
+    aac=$(aac_status "$chk" | head -1)
     printf '  "bluez5_fix": %s,\n' "$([ -n "$bz" ] && json_str "$bz" || echo null)"
+    printf '  "aac_module": %s,\n' "$([ -n "$aac" ] && json_str "$aac" || echo null)"
     printf '  "sinks": ['
     sinks=$(pactl list sinks short 2>/dev/null | awk '{print $2}')
     for u in $sinks; do
@@ -2116,7 +2174,7 @@ status_json() {
 # a closing line naming the fix. Exit 1 when something does not work.
 status() {
     [ "${1:-}" = --json ] && { status_json; return 0; }
-    local eff rec sticky fell conflict sinks server u en ac problems=0 fix= bz
+    local eff rec sticky fell conflict sinks server u en ac problems=0 fix= bz aac chk
     local c_ok= c_bad= c_warn= c_b= c_0=
     if [ -t 1 ]; then
         c_ok=$'\033[32m'; c_bad=$'\033[31m'; c_warn=$'\033[33m'; c_b=$'\033[1m'; c_0=$'\033[0m'
@@ -2169,7 +2227,8 @@ status() {
         fix=${fix:-audioctl restart}
     fi
 
-    bz=$(bluez5_fix_status)
+    chk=$(bluez5_fix_check)
+    bz=$(bluez5_fix_status "$chk")
     if [ -n "$bz" ]; then
         _head bluetooth
         case "$bz" in
@@ -2177,6 +2236,16 @@ status() {
         *)       _warn "bluez5 fix not applied: ${bz#not-applied }"
                  printf '        a car kit will not see calls - see furios-audio-bluez5-fix --check\n' ;;
         esac
+        while IFS= read -r aac; do
+            case "$aac" in
+            loaded)   _ok "AAC module loaded" ;;
+            absent)   _skip "no AAC module built - tools/build-bluez5-aac.sh" ;;
+            stale\ *) _warn "AAC module not loaded, stale: ${aac#stale }" ;;
+            legacy\ *)
+                _bad "an older AAC build in ${aac#legacy } is loaded whatever PipeWire it was built for"
+                fix=${fix:-sudo audioctl migrate} ;;
+            esac
+        done <<< "$(aac_status "$chk")"
     fi
 
     _head units
@@ -2226,6 +2295,7 @@ if [ "$(id -u)" -eq 0 ]; then
     for _v in AUDIOCTL_ETCU AUDIOCTL_LIB AUDIOCTL_STATE_DIR AUDIOCTL_WPCONF_DIR \
               AUDIOCTL_LEGACY_ETCU AUDIOCTL_LEGACY_WP AUDIOCTL_VENDOR_UNITS \
               AUDIOCTL_PLUGIN_DIR AUDIOCTL_PW_MODULE_DIR AUDIOCTL_BLUEZ5_FIX \
+              AUDIOCTL_LEGACY_SPA \
               AUDIOCTL_ORIGINAL_DIR AUDIOCTL_WPSTATE_DIR; do
         if [ -n "${!_v:-}" ]; then
             die "refusing to honour $_v as root - that would make this a way of deleting arbitrary files."

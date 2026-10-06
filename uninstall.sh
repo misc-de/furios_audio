@@ -220,10 +220,11 @@ remove_unowned \
 sudo rmdir /usr/lib/systemd/user/wireplumber.service.d 2>/dev/null || true
 sudo rmdir /usr/lib/systemd/system/ofono.service.d 2>/dev/null || true
 
-# The AAC codec module tools/build-bluez5-aac.sh builds into PipeWire's own
-# plugin directory, and the sources it fetched for that - now in the user's
-# cache, before that under a fixed name in /tmp.
-# With a record (tools/build-bluez5-aac.sh takes one) it was put back above.
+# The AAC codec module an older tools/build-bluez5-aac.sh built into
+# PipeWire's own plugin directory (it now goes under the user's
+# ~/.local/share, removed further down), and the sources it fetched - now in
+# the user's cache, before that under a fixed name in /tmp.
+# With a record (that older script took one) it was put back above.
 for f in "/usr/lib/$TRIPLET/spa-0.2/bluez5/libspa-codec-bluez5-aac.so" \
          "/usr/lib/$TRIPLET/spa-0.2/bluez5/aac-built-against"; do
     [ "$SYSREC" = 1 ] && orig_has_record "$f" && continue
@@ -325,6 +326,12 @@ fi
 # The headsets and codecs audioctl has seen, and the record itself - both
 # ours by name, and the record has done its work.
 rm -rf "$USERCFG/furios-audio"
+# The AAC module tools/build-bluez5-aac.sh builds for this user, and its note.
+# Only our subdirectory: ~/.local/share/furios-audio is ours by name, but
+# nothing says another tool of ours will never put something beside it.
+USERDATA=${XDG_DATA_HOME:-$HOME/.local/share}
+rm -rf "$USERDATA/furios-audio/spa-0.2"
+rmdir "$USERDATA/furios-audio" 2>/dev/null || true
 # Gone at logout anyway, but a reinstall in the same session would find them:
 # the patched Bluetooth plugin, the SCO hold's pid, bt-pulse's marker.
 if [ -n "${XDG_RUNTIME_DIR:-}" ]; then

@@ -3239,7 +3239,8 @@ class Bluez5CallIndex(unittest.TestCase):
         with redirect_stderr(io.StringIO()) as err:
             rc = bluez5fix.run(system_glob=self.glob,
                                runtime_dir=str(self.runtime),
-                               known=known, machine=machine)
+                               known=known, machine=machine,
+                               data_dir=str(self.root / "no-aac"))
         self.assertEqual(rc, 0)
         return err.getvalue()
 
@@ -3248,7 +3249,8 @@ class Bluez5CallIndex(unittest.TestCase):
         out = io.StringIO()
         bluez5fix.check(system_glob=self.glob,
                         known={BUILD_ID: "test"} if known is None else known,
-                        machine=machine, out=out)
+                        machine=machine, out=out,
+                        data_dir=str(self.root / "no-aac"))
         return out.getvalue()
 
     def test_exactly_one_instruction_changes(self):
@@ -3353,7 +3355,8 @@ class Bluez5CallIndex(unittest.TestCase):
 
     def test_check_without_a_library(self):
         out = io.StringIO()
-        bluez5fix.check(system_glob=str(self.root / "nothing/*.so"), out=out)
+        bluez5fix.check(system_glob=str(self.root / "nothing/*.so"), out=out,
+                        data_dir=str(self.root / "no-aac"))
         self.assertIn("clcc=not-applied\n", out.getvalue())
         self.assertIn("found 0", out.getvalue())
 
@@ -3369,8 +3372,97 @@ class Bluez5CallIndex(unittest.TestCase):
     def test_no_library_writes_nothing(self):
         with redirect_stderr(io.StringIO()):
             bluez5fix.run(system_glob=str(self.root / "nothing/*.so"),
-                          runtime_dir=str(self.runtime))
+                          runtime_dir=str(self.runtime),
+                          data_dir=str(self.root / "no-aac"))
         self.assertFalse(self.target.exists())
+
+    # --- the AAC module, offered only to the library it was built for ------
+
+    def aac(self, built_for=BUILD_ID, module=True):
+        data = self.root / "share/furios-audio/spa-0.2/bluez5"
+        data.mkdir(parents=True, exist_ok=True)
+        if module:
+            (data / bluez5fix.AAC_MODULE).write_bytes(b"aac")
+        if built_for is not None:
+            (data / bluez5fix.AAC_MARKER).write_text(
+                f"bluez5-build-id={built_for}\npipewire=1.6.6\n")
+        return data
+
+    def fix_aac(self, lib, data):
+        self.lib.write_bytes(lib)
+        with redirect_stderr(io.StringIO()) as err:
+            bluez5fix.run(system_glob=self.glob, runtime_dir=str(self.runtime),
+                          known={BUILD_ID: "test"}, machine="aarch64",
+                          data_dir=str(data))
+        return err.getvalue()
+
+    def aac_link(self):
+        return self.target.parent / bluez5fix.AAC_MODULE
+
+    def test_a_fresh_aac_module_is_linked_into_the_overlay(self):
+        data = self.aac()
+        self.fix_aac(make_elf(bluez5fix.SIGNATURE), data)
+        self.assertEqual(os.readlink(self.aac_link()),
+                         str(data / bluez5fix.AAC_MODULE))
+
+    def test_it_is_linked_even_where_the_clcc_fix_does_not_apply(self):
+        # The module depends on the library, not on the fix.
+        data = self.aac(built_for="cd" * 20)
+        self.fix_aac(make_elf(b"\x00" * 64, build_id="cd" * 20), data)
+        self.assertFalse(self.target.exists())
+        self.assertTrue(os.path.islink(self.aac_link()))
+
+    def test_a_stale_aac_module_is_left_out_and_said_once(self):
+        data = self.aac()
+        self.fix_aac(make_elf(bluez5fix.SIGNATURE), data)
+        self.assertTrue(os.path.islink(self.aac_link()))
+        # PipeWire update: same code, new build.
+        newer = make_elf(bluez5fix.SIGNATURE, build_id="cd" * 20)
+        said = self.fix_aac(newer, data)
+        self.assertFalse(os.path.lexists(self.aac_link()))
+        self.assertIn("AAC module not loaded", said)
+        self.assertNotIn("AAC module not loaded", self.fix_aac(newer, data))
+        state = Path(bluez5fix.state_path(str(self.runtime))).read_text()
+        self.assertIn("aac=stale\n", state)
+
+    def test_a_module_without_its_note_is_stale(self):
+        data = self.aac(built_for=None)
+        self.fix_aac(make_elf(bluez5fix.SIGNATURE), data)
+        self.assertFalse(os.path.lexists(self.aac_link()))
+
+    def test_no_module_no_link(self):
+        data = self.aac(module=False)
+        self.fix_aac(make_elf(bluez5fix.SIGNATURE), data)
+        self.assertFalse(os.path.lexists(self.aac_link()))
+        state = Path(bluez5fix.state_path(str(self.runtime))).read_text()
+        self.assertIn("aac=absent\n", state)
+
+    def test_an_old_system_copy_is_named(self):
+        (self.lib.parent / bluez5fix.AAC_MODULE).write_bytes(b"old")
+        said = self.fix_aac(make_elf(bluez5fix.SIGNATURE),
+                            self.aac(module=False))
+        self.assertIn("sudo audioctl migrate", said)
+        out = io.StringIO()
+        bluez5fix.check(system_glob=self.glob, known={BUILD_ID: "t"},
+                        machine="aarch64", out=out,
+                        data_dir=str(self.aac(module=False)))
+        self.assertIn(f"aac-legacy={self.lib.parent / bluez5fix.AAC_MODULE}",
+                      out.getvalue())
+
+    def test_check_reports_a_stale_module_without_touching_anything(self):
+        data = self.aac(built_for="cd" * 20)
+        self.lib.write_bytes(make_elf(bluez5fix.SIGNATURE))
+        out = io.StringIO()
+        bluez5fix.check(system_glob=self.glob, known={BUILD_ID: "t"},
+                        machine="aarch64", out=out, data_dir=str(data))
+        self.assertIn("aac=stale\n", out.getvalue())
+        self.assertIn("rebuild with build-bluez5-aac.sh", out.getvalue())
+        self.assertFalse(os.path.lexists(self.aac_link()))
+
+    def test_the_aac_module_lives_under_the_users_data_home(self):
+        with unittest.mock.patch.dict(os.environ, {"XDG_DATA_HOME": "/d"}):
+            self.assertEqual(bluez5fix.aac_dir(),
+                             "/d/furios-audio/spa-0.2/bluez5")
 
     def test_the_real_library_matches_when_it_is_the_one_this_was_made_for(self):
         real = glob.glob(bluez5fix.SYSTEM_GLOB)

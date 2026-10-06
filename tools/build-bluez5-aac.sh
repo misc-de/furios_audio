@@ -11,27 +11,56 @@
 # a ceiling. AAC is what such devices are tuned for.
 #
 # Debian omits the module because it needs fdk-aac, whose licence Debian keeps
-# at arm's length. Building it locally is a different matter, and the result is
-# purely additive: PipeWire loads codec modules one file at a time out of
-# .../spa-0.2/bluez5/, so this drops one file in beside the others and replaces
-# nothing that dpkg owns.
+# at arm's length. Building it locally is a different matter.
 #
-# The module is built against PipeWire's internal codec interface, so it has to
-# be rebuilt after a PipeWire update. The version it was built against is
-# recorded next to it, and audioctl warns when the two drift apart.
+# Where it goes, and why not beside Debian's codecs
+# -------------------------------------------------
+# It used to be installed with sudo into .../spa-0.2/bluez5/, beside the
+# modules libspa-0.2-bluetooth ships. Two things were wrong with that. A path
+# there can become dpkg's at any update (Debian may ship this very module one
+# day), and "sudo install" over it would leave dpkg -V dirty. And the module
+# speaks libspa-bluez5's internal codec interface: after a PipeWire update
+# WirePlumber went on loading the old build, whose ABI nobody promised -
+# audioctl could only print a note.
+#
+# Now it goes into the user's own ~/.local/share/furios-audio/spa-0.2/bluez5/,
+# with the GNU build-id of the libspa-bluez5.so it was built for. No sudo, no
+# dpkg-divert needed, because nothing under /usr is touched at all. Before
+# every WirePlumber start furios-audio-bluez5-fix links it into the overlay
+# directory WirePlumber searches first - only while that build-id is still the
+# installed one. After a PipeWire update the module is simply not offered:
+# Bluetooth music falls back to SBC, "audioctl status" says the module is
+# stale, and running this script again brings AAC back.
 set -e
+
+# Root would build into /root and leave the phone's user without the module.
+[ "$(id -u)" -ne 0 ] || { echo "run this as the phone's user, not as root - it needs no sudo" >&2; exit 1; }
 
 PWVER=$(pkg-config --modversion libpipewire-0.3)
 SPADIR=$(pkg-config --variable=libdir libpipewire-0.3)/spa-0.2/bluez5
-# NOT /tmp: what is built here is installed into /usr with sudo, so whoever
-# controls the source tree controls a file that every session then loads. A
-# predictable path under /tmp lets anyone on the machine put one there first -
-# this script would find it ("sources already in ...") and build it. The
-# default now lives in the user's own cache, and a path handed in through SRC
-# is checked before it is trusted.
+DEST=${XDG_DATA_HOME:-$HOME/.local/share}/furios-audio/spa-0.2/bluez5
+# NOT /tmp: whoever controls the source tree controls a file that every
+# WirePlumber of this user then loads. A predictable path under /tmp lets
+# anyone on the machine put one there first - this script would find it
+# ("sources already in ...") and build it. The default lives in the user's own
+# cache, and a path handed in through SRC is checked before it is trusted.
 SRC=${SRC:-${XDG_CACHE_HOME:-$HOME/.cache}/furios-audio/pipewire-$PWVER-src}
 
-echo "PipeWire $PWVER, module goes to $SPADIR"
+# The helper that reads build-ids, next to this script in the repo or where
+# either install put it.
+FIX=
+for f in "$(dirname "$0")/furios-audio-bluez5-fix.py" \
+         /usr/local/bin/furios-audio-bluez5-fix /usr/bin/furios-audio-bluez5-fix; do
+    [ -e "$f" ] && { FIX=$f; break; }
+done
+[ -n "$FIX" ] || { echo "furios-audio-bluez5-fix not found - install furios_audio first" >&2; exit 1; }
+case "$FIX" in
+*.py) BUILD_ID=$(python3 "$FIX" --build-id "$SPADIR/libspa-bluez5.so") ;;
+*)    BUILD_ID=$("$FIX" --build-id "$SPADIR/libspa-bluez5.so") ;;
+esac
+[ -n "$BUILD_ID" ] || { echo "$SPADIR/libspa-bluez5.so has no build-id - refusing" >&2; exit 1; }
+
+echo "PipeWire $PWVER (libspa-bluez5 $BUILD_ID), module goes to $DEST"
 
 MISSING=
 for p in libfdk-aac-dev libdbus-1-dev libsbc-dev; do
@@ -92,26 +121,27 @@ meson setup "$SRC/build-aac" "$SRC" \
 echo "3) building the one module"
 ninja -C "$SRC/build-aac" spa/plugins/bluez5/libspa-codec-bluez5-aac.so
 
-echo "4) installing"
-# What was there before, for uninstall.sh - see original-state.sh. Next to
-# this script in the repo (tools/) and in the package (/usr/share/furios-audio).
-# A file found there is an older build of ours - unless a package owns it:
-# Debian may one day ship this very module, and then it is theirs.
-# shellcheck source=original-state.sh
-. "$(dirname "$0")/original-state.sh"
-orig_use_system
-for f in "$SPADIR/libspa-codec-bluez5-aac.so" "$SPADIR/aac-built-against"; do
-    if dpkg -S "$f" >/dev/null 2>&1; then orig_record "$f"
-    else orig_record "$f" --ours-if-present; fi
-done
-sudo install -m644 "$SRC/build-aac/spa/plugins/bluez5/libspa-codec-bluez5-aac.so" \
-    "$SPADIR/libspa-codec-bluez5-aac.so"
-printf '%s\n' "$PWVER" | sudo tee "$SPADIR/aac-built-against" >/dev/null
-orig_mark_ours "$SPADIR/libspa-codec-bluez5-aac.so"
-orig_mark_ours "$SPADIR/aac-built-against"
+echo "4) installing, for this user only"
+mkdir -p "$DEST"
+# Atomically: a WirePlumber starting now sees the old pair or the new one.
+install -m644 "$SRC/build-aac/spa/plugins/bluez5/libspa-codec-bluez5-aac.so" \
+    "$DEST/.libspa-codec-bluez5-aac.so.new"
+printf 'bluez5-build-id=%s\npipewire=%s\n' "$BUILD_ID" "$PWVER" > "$DEST/.aac-built-for.new"
+mv -f "$DEST/.libspa-codec-bluez5-aac.so.new" "$DEST/libspa-codec-bluez5-aac.so"
+mv -f "$DEST/.aac-built-for.new" "$DEST/aac-built-for"
+
+# The system copy an older version of this script installed would still be
+# loaded, whatever PipeWire it was built for.
+if [ -e "$SPADIR/libspa-codec-bluez5-aac.so" ] \
+   && ! dpkg -S "$SPADIR/libspa-codec-bluez5-aac.so" >/dev/null 2>&1; then
+    echo
+    echo "An older build is still in $SPADIR - remove it once:"
+    echo "   sudo audioctl migrate"
+fi
 
 echo
 echo "Done. Restart the audio stack and reconnect the headset:"
 echo "   audioctl restart"
 echo "   bluetoothctl disconnect <mac> && bluetoothctl connect <mac>"
 echo "The card then offers \"High Fidelity Playback (A2DP Sink, codec AAC)\"."
+echo "After a PipeWire update it is left out until this is run again."

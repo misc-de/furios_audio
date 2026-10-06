@@ -228,6 +228,14 @@ fi
 export VERIFY_TRIES=1 CALL_CARD_TRIES=1 CALLAUDIO_WARMUP=0
 { audioctl set pw-hal; audioctl bt-extras off; audioctl try pw-tunnel
   audioctl set pw-hal; audioctl bt-extras on; audioctl boot
+  furios-audio-bluez5-fix
+  # What tools/build-bluez5-aac.sh leaves: the module under the user's own
+  # data directory (building it takes minutes and a network - a stand-in),
+  # and the link the helper makes to it at the next WirePlumber start.
+  aac="$HOME/.local/share/furios-audio/spa-0.2/bluez5"; mkdir -p "$aac"
+  : > "$aac/libspa-codec-bluez5-aac.so"
+  printf 'bluez5-build-id=%s\n' "$(furios-audio-bluez5-fix --build-id \
+      "$(ls /usr/lib/*/spa-0.2/bluez5/libspa-bluez5.so | head -1)")" > "$aac/aac-built-for"
   furios-audio-bluez5-fix; } > "$R/use.log" 2>&1
 snap > "$R/used"
 case "$ROUND" in

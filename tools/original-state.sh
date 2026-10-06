@@ -4,7 +4,7 @@
 # it back from exactly that.
 #
 # Sourced, not run: by install.sh, install-hal.sh, uninstall.sh,
-# tools/build-plugin.sh and tools/build-bluez5-aac.sh for the system side, and
+# tools/build-plugin.sh (and an older tools/build-bluez5-aac.sh) for the system side, and
 # by audioctl for what it writes under $HOME.
 #
 # Why this exists

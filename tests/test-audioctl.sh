@@ -175,6 +175,8 @@ with_audioctl() {
       # The +CLCC helper, likewise: the phone's own would report the phone's
       # own library. A test that wants it writes a stub here.
       BLUEZ5_FIX="$STUBDIR/bluez5-fix"
+      # And where an older build-bluez5-aac.sh put the AAC module.
+      LEGACY_SPA="$STUBDIR/legacy-spa"
       export AUDIOCTL_ETCU="$ETCU" AUDIOCTL_DROPIN="$DROPIN" \
              AUDIOCTL_WPCONF_DIR="$WPUSER" \
              AUDIOCTL_PLUGIN_DIR="$PLUGIN_DIR" AUDIOCTL_PW_MODULE_DIR="$PLUGIN_DIR"
@@ -415,6 +417,30 @@ check "anything else is refused rather than removed" "yes" \
         legacy_leftovers() { printf "%s" "$STUBDIR/innocent"; }
         migrate_legacy >/dev/null 2>&1
         [ -e "$STUBDIR/innocent" ] && echo yes || echo no')"
+# The AAC module an older build-bluez5-aac.sh installed beside Debian's: it
+# is loaded whatever PipeWire it was built for, so it is a leftover - unless a
+# package owns it, then it is Debian's.
+check "an old system AAC module is a leftover" "yes" \
+    "$(with_audioctl 'LEGACY_ETCU="$STUBDIR/lg6"; mkdir -p "$LEGACY_SPA"
+        : > "$LEGACY_SPA/libspa-codec-bluez5-aac.so"
+        dpkg() { return 1; }
+        warn_about_legacy 2>&1 | grep -q "libspa-codec-bluez5-aac.so" && echo yes || echo no')"
+check "but not when a package owns it" "" \
+    "$(with_audioctl 'LEGACY_ETCU="$STUBDIR/lg6"; mkdir -p "$LEGACY_SPA"
+        : > "$LEGACY_SPA/libspa-codec-bluez5-aac.so"
+        dpkg() { return 0; }
+        warn_about_legacy 2>&1')"
+check "migrate removes it and its note, and nothing beside them" "no no yes" \
+    "$(with_audioctl 'LEGACY_ETCU="$STUBDIR/lg7"; mkdir -p "$LEGACY_SPA"
+        : > "$LEGACY_SPA/libspa-codec-bluez5-aac.so"
+        echo 1.6.6 > "$LEGACY_SPA/aac-built-against"
+        : > "$LEGACY_SPA/libspa-codec-bluez5-sbc.so"
+        dpkg() { return 1; }
+        migrate_legacy >/dev/null 2>&1
+        r=; for f in libspa-codec-bluez5-aac.so aac-built-against libspa-codec-bluez5-sbc.so; do
+            [ -e "$LEGACY_SPA/$f" ] && r="$r yes" || r="$r no"
+        done; printf "%s" "${r# }"')"
+rm -rf "$STUBDIR/legacy-spa"
 check "with nothing left over it says so" "yes" \
     "$(with_audioctl 'LEGACY_ETCU="$STUBDIR/lg5"
         migrate_legacy 2>&1 | grep -q "already migrated" && echo yes || echo no')"
@@ -707,20 +733,36 @@ check "an unrecorded version is not called a mismatch" "no" \
 check "and it says how to record it" "yes" \
     "$(with_audioctl 'PLUGIN_DIR="$STUBDIR"; echo unknown > "$STUBDIR/built-against"
         plugin_version_check 2>&1 | grep -q "install-hal.sh again" && echo yes || echo no')"
-# The AAC module lives wherever pkg-config says PipeWire's libdir is, so the
-# stub points that at the temporary directory.
-cat > "$STUBDIR/pkg-config" <<STUB
-#!/bin/sh
-case "\$1" in
---variable=libdir) echo "$STUBDIR" ;;
-*) echo 1.7.0 ;;
-esac
-STUB
-chmod +x "$STUBDIR/pkg-config"
-mkdir -p "$STUBDIR/spa-0.2/bluez5"
-echo 1.6.6 > "$STUBDIR/spa-0.2/bluez5/aac-built-against"
+# The AAC module: the helper decides (it is never loaded stale); audioctl
+# only says why AAC is gone.
+printf '#!/bin/sh\nprintf "clcc=applied\\naac=stale\\naac-reason=built for libspa-bluez5 aa, installed is bb\\n"\n' \
+    > "$STUBDIR/bluez5-fix"
+chmod +x "$STUBDIR/bluez5-fix"
 check "and so is the AAC module" "yes" \
-    "$(with_audioctl 'aac_version_check 2>&1 | grep -q "NOTE" && echo yes || echo no')"
+    "$(with_audioctl 'aac_version_check 2>&1 | grep -q "AAC module is not loaded: built for" && echo yes || echo no')"
+check "status says the stale module is left out" "yes" \
+    "$(with_audioctl 'status' | grep -q "warn  AAC module not loaded, stale: built for" && echo yes || echo no)"
+check "and the JSON carries it" "stale" \
+    "$(with_audioctl 'status --json' | python3 -c 'import json,sys; print(json.load(sys.stdin)["aac_module"].split()[0])' 2>/dev/null)"
+printf '#!/bin/sh\nprintf "clcc=applied\\naac=loaded\\n"\n' > "$STUBDIR/bluez5-fix"
+check "a fresh module says nothing at a switch" "" \
+    "$(with_audioctl 'aac_version_check 2>&1')"
+check "and is ok in status" "yes" \
+    "$(with_audioctl 'status' | grep -q "ok    AAC module loaded" && echo yes || echo no)"
+printf '#!/bin/sh\nprintf "clcc=applied\\naac=absent\\naac-legacy=/usr/lib/x/spa-0.2/bluez5/libspa-codec-bluez5-aac.so\\n"\n' \
+    > "$STUBDIR/bluez5-fix"
+# Whether migrate is the fix named last depends on what else this stubbed
+# phone gets wrong first; that it is a failure, and the line itself, do not.
+check "an old system copy is a failure" "1 yes" \
+    "$(with_audioctl 'out=$(status); rc=$?; printf "%s " $rc; printf "%s" "$out" | grep -q "FAIL  an older AAC build in /usr/lib/x/spa-0.2/bluez5/libspa-codec-bluez5-aac.so" && echo yes || echo no')"
+check "with migrate as the fix when nothing else is wrong" "yes" \
+    "$(with_audioctl 'effective_profile() { echo standard; }; current_profile() { echo standard; }
+        pulse_owner() { echo PulseAudio; }; pactl() { printf "1\tdroid-sink\n"; }
+        uctl() { echo active; }
+        status 2>&1 | grep -q "fix with: sudo audioctl migrate$" && echo yes || echo no')"
+check "and named at a switch too" "yes" \
+    "$(with_audioctl 'aac_version_check 2>&1 | grep -q "sudo audioctl migrate" && echo yes || echo no')"
+rm -f "$STUBDIR/bluez5-fix"
 
 # --- holding a route against callaudiod ------------------------------------
 stub logger 0 ""
@@ -1158,6 +1200,7 @@ run_audioctl() {
         AUDIOCTL_PLUGIN_DIR="$STUBDIR/plugin" \
         AUDIOCTL_PW_MODULE_DIR="$STUBDIR/plugin" \
         AUDIOCTL_BLUEZ5_FIX="$STUBDIR/bluez5-fix" \
+        AUDIOCTL_LEGACY_SPA="$STUBDIR/legacy-spa" \
         VERIFY_TRIES=1 BT_HOLD_INTERVAL=0 bash ${AUDIOCTL_TRACE:+-x} "$HERE/../audioctl" "$@" 2>&1
 }
 mkdir -p "$STUBDIR/plugin"

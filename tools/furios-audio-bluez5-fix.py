@@ -66,6 +66,18 @@ dependencies, for what is a one-word fix. The copy changes four bytes of Debian'
 falls back to it on any doubt; the source patch belongs upstream
 (upstream/pipewire-1-clcc-call-index.md), not in a second Bluetooth stack.
 
+The AAC codec module goes the same way. tools/build-bluez5-aac.sh builds it
+into the user's own ~/.local/share/furios-audio/spa-0.2/bluez5/ - nothing
+under /usr, no sudo, nothing dpkg owns or could ever own - and records the
+build-id of the libspa-bluez5.so it was built for. This script links it into
+the same runtime directory only while that build-id is still the installed
+one: the module speaks libspa-bluez5's internal codec interface, which has
+no ABI promise, and a module from before a PipeWire update must not be
+loaded. A stale one is simply left out, Bluetooth music falls back to SBC
+and status says why, until the module is rebuilt. An AAC module that an
+older build-bluez5-aac.sh installed into the system directory is reported:
+it would be loaded whatever its age, and "sudo audioctl migrate" takes it out.
+
 Known limit: every call is number 1. With a second call waiting, a car shows
 both as the same call. One call at a time - the case this is for - is right.
 """
@@ -73,6 +85,7 @@ both as the same call. One call at a time - the case this is for - is right.
 import glob
 import os
 import struct
+import subprocess
 import sys
 import tempfile
 
@@ -107,6 +120,10 @@ NT_GNU_BUILD_ID = 3
 # Where the result of the last run is kept, so the journal hears about a
 # library that does not fit once rather than at every WirePlumber restart.
 STATE_NAME = "bluez5-fix.state"
+
+AAC_MODULE = "libspa-codec-bluez5-aac.so"
+# Next to the module: what it was built for, one key=value per line.
+AAC_MARKER = "aac-built-for"
 
 
 def log(message):
@@ -192,6 +209,86 @@ def overlay_path(runtime_dir):
                         "libspa-bluez5.so")
 
 
+def aac_dir():
+    """Where tools/build-bluez5-aac.sh puts the module: the user's own."""
+    base = os.environ.get("XDG_DATA_HOME") or \
+        os.path.join(os.path.expanduser("~"), ".local", "share")
+    return os.path.join(base, "furios-audio", "spa-0.2", "bluez5")
+
+
+def read_marker(path):
+    values = {}
+    try:
+        with open(path) as f:
+            for line in f:
+                key, sep, value = line.strip().partition("=")
+                if sep:
+                    values[key] = value
+    except OSError:
+        pass
+    return values
+
+
+def legacy_aac(system_glob):
+    """An AAC module an older build-bluez5-aac.sh put beside Debian's, unless
+    a package owns it (then it is Debian's and fine)."""
+    for d in glob.glob(os.path.dirname(system_glob)):
+        path = os.path.join(d, AAC_MODULE)
+        if not os.path.exists(path):
+            continue
+        try:
+            owned = subprocess.run(["dpkg-query", "-S", path],
+                                   stdout=subprocess.DEVNULL,
+                                   stderr=subprocess.DEVNULL).returncode == 0
+        except OSError:
+            owned = False
+        if not owned:
+            return path
+    return None
+
+
+def aac_state(build_id, data_dir=None):
+    """("loaded"|"stale"|"absent", reason or None, module path or None)."""
+    data_dir = data_dir or aac_dir()
+    module = os.path.join(data_dir, AAC_MODULE)
+    if not os.path.isfile(module):
+        return "absent", None, None
+    built_for = read_marker(os.path.join(data_dir, AAC_MARKER)) \
+        .get("bluez5-build-id", "")
+    if not build_id:
+        return "stale", "the installed libspa-bluez5.so has no build-id " \
+                        "to compare with", module
+    if built_for != build_id:
+        return "stale", f"built for libspa-bluez5 {built_for or 'unknown'}, " \
+                        f"installed is {build_id} - rebuild with " \
+                        "build-bluez5-aac.sh", module
+    return "loaded", None, module
+
+
+def stage_aac(runtime_dir, build_id, data_dir=None):
+    """Link the AAC module into the overlay when it fits; never leave an old
+    link behind. Returns aac_state()."""
+    link = os.path.join(os.path.dirname(overlay_path(runtime_dir)), AAC_MODULE)
+    try:
+        os.unlink(link)
+    except FileNotFoundError:
+        pass
+    state = aac_state(build_id, data_dir)
+    if state[0] == "loaded":
+        os.makedirs(os.path.dirname(link), mode=0o700, exist_ok=True)
+        os.symlink(state[2], link)
+    return state
+
+
+def aac_text(state, legacy):
+    lines = [f"aac={state[0]}"]
+    if state[1]:
+        lines.append(f"aac-reason={state[1]}")
+    if legacy:
+        lines.append(f"aac-legacy={legacy}")
+    return "\n".join(lines) + "\n"
+
+
 def state_path(runtime_dir):
     return os.path.join(runtime_dir, "furios-audio", STATE_NAME)
 
@@ -228,7 +325,8 @@ def read_library(system_glob):
         return found[0], f.read()
 
 
-def check(system_glob=SYSTEM_GLOB, known=None, machine=None, out=sys.stdout):
+def check(system_glob=SYSTEM_GLOB, known=None, machine=None, out=sys.stdout,
+          data_dir=None):
     """What the next WirePlumber start would do, written nowhere but out.
 
     For "audioctl status" and for whoever adds a library to the list."""
@@ -237,13 +335,25 @@ def check(system_glob=SYSTEM_GLOB, known=None, machine=None, out=sys.stdout):
         reason, build_id = f"library changed: {data}", None
     else:
         _, reason, build_id = evaluate(data, known, machine)
+        if build_id is None:
+            build_id = identity_or_none(data)
     out.write(state_text(reason, build_id))
+    out.write(aac_text(aac_state(build_id, data_dir),
+                       legacy_aac(system_glob)))
     if path is not None:
         out.write(f"library={path}\n")
     return 0
 
 
-def run(system_glob=SYSTEM_GLOB, runtime_dir=None, known=None, machine=None):
+def identity_or_none(data):
+    try:
+        return elf_identity(data)[1]
+    except (ValueError, struct.error):
+        return None
+
+
+def run(system_glob=SYSTEM_GLOB, runtime_dir=None, known=None, machine=None,
+        data_dir=None):
     runtime_dir = runtime_dir or os.environ.get("XDG_RUNTIME_DIR")
     if not runtime_dir:
         log("no XDG_RUNTIME_DIR - leaving the plugin as it is")
@@ -263,10 +373,27 @@ def run(system_glob=SYSTEM_GLOB, runtime_dir=None, known=None, machine=None):
     else:
         patched, reason, build_id = evaluate(data, known, machine)
 
-    news = remember(runtime_dir, state_text(reason, build_id))
+    # The AAC module depends on the library, not on the fix: it is checked
+    # against the installed build-id even where the fix does not apply.
+    library_id = None if path is None else identity_or_none(data)
+    try:
+        aac = stage_aac(runtime_dir, library_id, data_dir)
+    except OSError as e:
+        aac = ("stale", f"could not be linked ({e})", None)
+    legacy = legacy_aac(system_glob)
+
+    news = remember(runtime_dir, state_text(reason, build_id)
+                    + aac_text(aac, legacy))
+    # Once per change, not at every WirePlumber restart - and then loud
+    # enough to be found.
+    if news and aac[0] == "stale":
+        log(f"AAC module not loaded: {aac[1]} - Bluetooth music uses SBC")
+    if news and legacy:
+        log(f"an AAC module from an older build-bluez5-aac.sh is in {legacy} "
+            "and is loaded whatever PipeWire it was built for - "
+            "remove it once with: sudo audioctl migrate")
     if patched is None:
-        # Once per library, not at every WirePlumber restart - and then loud
-        # enough to be found: this is the moment the car goes quiet.
+        # This is the moment the car goes quiet.
         if news:
             log(f"bluez5 fix not applied: {reason} - WirePlumber loads the "
                 "original, and a car kit will not see calls. "
@@ -288,6 +415,11 @@ def run(system_glob=SYSTEM_GLOB, runtime_dir=None, known=None, machine=None):
 
 
 if __name__ == "__main__":
+    if len(sys.argv) == 3 and sys.argv[1] == "--build-id":
+        # For build-bluez5-aac.sh: which library a module is built for.
+        with open(sys.argv[2], "rb") as f:
+            print(identity_or_none(f.read()) or "")
+        sys.exit(0)
     if sys.argv[1:] == ["--check"]:
         try:
             sys.exit(check())

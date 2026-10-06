@@ -677,10 +677,16 @@ not AAC, which needs fdk-aac. Most earbuds offer AAC and SBC and nothing else,
 so without it PipeWire falls back to SBC, and the headset decides how good that
 gets: the one measured here caps SBC at bitpool 39, which even SBC-XQ runs into.
 `tools/build-bluez5-aac.sh` builds the missing module from the matching PipeWire
-sources and drops it in beside the others - additive, replacing nothing dpkg
-owns. `audioctl` warns when a PipeWire update has moved past it, because the
-only symptom would otherwise be that Bluetooth music quietly sounds worse than
-it did yesterday.
+sources. It first went in beside Debian's codecs with `sudo install` - a path
+dpkg may own one day, and a module WirePlumber went on loading after a
+PipeWire update, against an internal codec interface nobody keeps stable.
+Since 6.10.2026 it goes under `~/.local/share/furios-audio/spa-0.2/bluez5/`
+with the build-id of the `libspa-bluez5.so` it was built for, and
+`furios-audio-bluez5-fix` links it into WirePlumber's overlay directory at
+every start only while that build-id is still installed. A stale module is
+never loaded: music falls back to SBC and `audioctl status` says why. No sudo,
+nothing under `/usr`, so no `dpkg-divert` either. A copy an older script left
+in the system directory is reported and removed by `sudo audioctl migrate`.
 
 Reading what a headset actually offers, rather than guessing:
 

@@ -47,7 +47,7 @@ to look like.
 
 | Record | Written by | What it covers |
 |---|---|---|
-| `/var/lib/furios-audio-original/` (root, 0700) | `install.sh`, `install-hal.sh`, `tools/build-plugin.sh`, `tools/build-bluez5-aac.sh` | files and directories under `/usr/local`, `/usr/lib/…/spa-0.2`, `/etc/systemd` (units, drop-ins for ofono and WirePlumber, the echo unit's want), the masks in `/etc/systemd/user`, `/var/lib/furios-audio`, and the packages the plugin build installed |
+| `/var/lib/furios-audio-original/` (root, 0700) | `install.sh`, `install-hal.sh`, `tools/build-plugin.sh` (and `tools/build-bluez5-aac.sh` before 6.10.2026; it now writes only under `~/.local/share/furios-audio`) | files and directories under `/usr/local`, `/usr/lib/…/spa-0.2`, `/etc/systemd` (units, drop-ins for ofono and WirePlumber, the echo unit's want), the masks in `/etc/systemd/user`, `/var/lib/furios-audio`, and the packages the plugin build installed |
 | `~/.config/furios-audio/original/` | `audioctl` (first switch, `bt-extras`, `bt-codec`, `boot`) and `install.sh` before its first `systemctl --user enable` | masks and copies of five units, the pipewire drop-in, the droid-off file, the wants of our units and of WirePlumber under `~/.config/systemd/user`, and `~/.local/state/wireplumber` |
 | `/run/furios-audio-dmnr/usip.original` | `furios-audio-dmnr on` | group and mode of `/dev/usip` before it was opened (the node is recreated at every boot, and so is this) |
 
