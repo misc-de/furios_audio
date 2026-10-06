@@ -175,15 +175,47 @@ chmod 755 "$S"/*
 cat > "$W/scenario.sh" <<'EOF'
 #!/bin/bash
 snap() {
-    # type, mode, link target and content of everything the scripts can reach
-    find /etc/systemd /usr/local /var/lib "$SPA" "$HOME" "$XDG_RUNTIME_DIR" /tmp \
-        \( -path /var/lib/dpkg -o -path "$W" \) -prune -o -print 2>/dev/null \
-    | sort | while IFS= read -r p; do
-        if [ -L "$p" ]; then printf 'link %s -> %s\n' "$p" "$(readlink "$p")"
-        elif [ -d "$p" ]; then printf 'dir  %s\n' "$p"
-        else printf 'file %s %s %s\n' "$p" "$(stat -c %a "$p")" "$(md5sum < "$p" | cut -c1-12)"
-        fi
-    done
+    # type, mode, link target and content of everything the scripts can reach.
+    # One python3 rather than a stat and an md5sum per file: this ran five
+    # times a round over thousands of files and was 40 % of the suite. Same
+    # lines as the shell loop it replaces (find's walk, symlinks not followed,
+    # /var/lib/dpkg and $W pruned).
+    python3 - /var/lib/dpkg "$W" /etc/systemd /usr/local /var/lib "$SPA" \
+        "$HOME" "$XDG_RUNTIME_DIR" /tmp <<'SNAP'
+import hashlib, os, stat, sys
+prune = set(sys.argv[1:3])
+out = []
+def visit(p):
+    if p in prune:
+        return
+    try:
+        st = os.lstat(p)
+    except OSError:
+        return
+    if stat.S_ISLNK(st.st_mode):
+        out.append("link %s -> %s" % (p, os.readlink(p)))
+    elif stat.S_ISDIR(st.st_mode):
+        out.append("dir  %s" % p)
+        try:
+            names = os.listdir(p)
+        except OSError:
+            return
+        for n in names:
+            visit(os.path.join(p, n))
+    else:
+        md5 = ""
+        if stat.S_ISREG(st.st_mode):
+            try:
+                with open(p, "rb") as f:
+                    md5 = hashlib.md5(f.read()).hexdigest()[:12]
+            except OSError:
+                pass
+        out.append("file %s %o %s" % (p, stat.S_IMODE(st.st_mode), md5))
+for r in sys.argv[3:]:
+    visit(r)
+if out:
+    print("\n".join(sorted(out)))
+SNAP
 }
 # Nothing outside may be writable, or this is not a sandbox.
 if touch "$REAL_ROOT/.sandbox-probe" 2>/dev/null; then

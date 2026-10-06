@@ -832,8 +832,30 @@ check "bt-call on puts the call on the headset" "yes" \
     "$(says 'bt_call on' 'Back with')"
 check "bt-call off brings it back to the phone" "yes" \
     "$(says 'bt_call off' 'output-earpiece set')"
+# For watch the call has to end, or it holds the route for all 900 rounds of
+# bt_hold - half a minute of this suite. Three answers of voicecall (seen,
+# then two rounds held), then the card is back on its normal profile.
+cat > "$STUBDIR/pactl" <<STUB
+#!/bin/sh
+case "\$*" in
+*"list short cards"*) printf '1\tbluez_card.AA_BB\tmodule-bluez5-device.c\n' ;;
+*"list cards"*)
+    n=\$(cat "$STUBDIR/pactl.calls" 2>/dev/null || echo 0); n=\$((n+1))
+    echo \$n > "$STUBDIR/pactl.calls"
+    [ \$n -le 3 ] && prof=voicecall || prof=primary
+    printf 'Card #1\n\tName: droid\n\tActive Profile: %s\n' "\$prof" ;;
+*"list sinks"*)       printf 'Sink #1\n\tName: droid-sink\n\tActive Port: output-bluetooth_sco\n' ;;
+*"list sources"*)     printf 'Source #2\n\tName: droid-source\n\tActive Port: input-bluetooth_sco_headset\n' ;;
+esac
+exit 0
+STUB
+chmod +x "$STUBDIR/pactl"
+rm -f "$STUBDIR/pactl.calls"
+out=$(with_audioctl 'bt_call watch' 2>&1)
 check "bt-call watch acts as soon as the call is there" "yes" \
-    "$(says 'bt_call watch' 'call detected')"
+    "$(case "$out" in *"call detected"*) echo yes ;; *) echo no ;; esac)"
+check "and goes back to the phone when the call ends" "yes" \
+    "$(case "$out" in *"call ended - back to the phone"*) echo yes ;; *) echo no ;; esac)"
 
 # A route that has moved away is set again - callaudiod does that mid-call.
 cat > "$STUBDIR/pactl" <<'STUB'
@@ -1398,6 +1420,7 @@ stub_logging_systemctl
 stub pactl 0 "60	droid-sink	PipeWire	s16le 2ch 48000Hz	SUSPENDED"
 AUDIOCTL_STATE_DIR="$STUBDIR/state" AUDIOCTL_ETCU="$STUBDIR/etc" \
     AUDIOCTL_WPCONF_DIR="$STUBDIR/wp" VERIFY_TRIES=1 \
+    CALL_CARD_TRIES=1 CALLAUDIO_WARMUP=0 \
     bash ${AUDIOCTL_TRACE:+-x} "$HERE/../audioctl" set standard >/dev/null 2>&1
 check "a switch from the command line does restart the stack" "yes" \
     "$(grep -qx -- '--user restart pipewire.service' "$STUBDIR/systemctl.log" \
@@ -1429,7 +1452,7 @@ STUB
 run_boot_check() {
     AUDIOCTL_STATE_DIR="$STUBDIR/state" AUDIOCTL_ETCU="$STUBDIR/etc" \
         AUDIOCTL_WPCONF_DIR="$STUBDIR/wp" \
-        VERIFY_TRIES=1 BOOT_VERIFY_TRIES=1 \
+        VERIFY_TRIES=1 BOOT_VERIFY_TRIES=1 CALL_CARD_TRIES=1 CALLAUDIO_WARMUP=0 \
         bash ${AUDIOCTL_TRACE:+-x} "$HERE/../audioctl" boot-check 2>&1
 }
 
