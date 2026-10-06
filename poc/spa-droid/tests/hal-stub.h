@@ -47,6 +47,11 @@ struct hal_stub {
 	bool set_input_device_works;
 	bool no_set_volume, no_voice_volume;
 	ssize_t write_result, read_result;   /* or HAL_STUB_PASS */
+	/* Reads deliver a running count, one 32-bit word (= one stereo S16
+	 * frame) after the other, starting at 1, instead of a constant. Lets a
+	 * test see audio that comes out twice or out of order. */
+	bool read_counts;
+	uint32_t read_counter;     /* the last word delivered */
 	int set_route_result, set_parameters_result, set_mode_result;
 	int set_voice_volume_result, set_volume_result;
 	unsigned latency_ms;

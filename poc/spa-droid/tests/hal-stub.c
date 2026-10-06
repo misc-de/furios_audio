@@ -95,7 +95,14 @@ static ssize_t stub_read(struct audio_stream_in *stream, void *buffer,
 		return hal_stub.read_result;
 	/* Something other than silence, so a test can tell a real read from a
 	 * buffer nobody filled. */
-	memset(buffer, 0x21, bytes);
+	if (hal_stub.read_counts) {
+		uint32_t *w = buffer;
+		size_t i;
+		for (i = 0; i < bytes / sizeof(*w); i++)
+			w[i] = ++hal_stub.read_counter;
+	} else {
+		memset(buffer, 0x21, bytes);
+	}
 	hal_stub.bytes_read += bytes;
 	return (ssize_t) bytes;
 }

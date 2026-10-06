@@ -135,7 +135,10 @@ struct impl {
 	bool mode_holds_hal;        /* HAL only kept open for call mode */
 	bool in_call;               /* mode is AUDIO_MODE_IN_CALL */
 	uint64_t hal_latency_ns;    /* remembered at open time, see latency_ns() */
-	bool hal_failed;            /* HAL persistently refuses to take data */
+	/* HAL persistently refuses to take data. Set by the writer/reader
+	 * thread, read by process() on the data thread and by the Start command
+	 * on the main thread - only ever through __atomic, see hal_failed_get(). */
+	bool hal_failed;
 
 	/* handover to the writer thread */
 	struct spa_ringbuffer ring;
@@ -143,7 +146,11 @@ struct impl {
 	pthread_t writer;
 	pthread_mutex_t lock;
 	pthread_cond_t cond;
-	bool running;
+	bool running;            /* only touched under lock, or before the thread exists */
+	/* Capture: the reader thread had to drop audio because the ring was
+	 * full. Set by the producer, cleared by the consumer, which then skips
+	 * its own read index forward to the newest audio. __atomic only. */
+	bool ring_overflowed;
 	bool started;
 	bool drain;
 
@@ -167,10 +174,36 @@ struct impl {
 	uint64_t bytes_written;  /* handed to the HAL by the writer thread */
 	uint32_t n_process;
 	uint32_t n_write;
+	/* These two are counted on the writer/reader thread (n_overrun on the
+	 * data thread for playback) and read elsewhere: __atomic only. */
 	uint32_t n_write_err;    /* rejected HAL writes or reads */
 	uint32_t n_overrun;      /* blocks dropped because the ring was full */
 	uint32_t n_underrun;     /* capture: blocks padded with silence */
 };
+
+/* Flags and counters that more than one thread touches. Plain fields were a
+ * data race - undefined behaviour, and on arm64 a store the other thread is
+ * not obliged to ever see. Same builtins as spa_ringbuffer uses. */
+static inline bool hal_failed_get(struct impl *this)
+{
+	return __atomic_load_n(&this->hal_failed, __ATOMIC_ACQUIRE);
+}
+
+static inline void hal_failed_set(struct impl *this, bool v)
+{
+	__atomic_store_n(&this->hal_failed, v, __ATOMIC_RELEASE);
+}
+
+/* Returns the count BEFORE the increment, so "== 0" means "first one". */
+static inline uint32_t count_up(uint32_t *counter)
+{
+	return __atomic_fetch_add(counter, 1, __ATOMIC_RELAXED);
+}
+
+static inline uint32_t count_get(uint32_t *counter)
+{
+	return __atomic_load_n(counter, __ATOMIC_RELAXED);
+}
 
 /* Diagnostics: info by default (invisible below PipeWire's log level), raised
  * to warn with SPA_DROID_DIAG=1 so they show without PIPEWIRE_DEBUG. */
@@ -379,8 +412,10 @@ static void reset_counters(struct impl *this)
 {
 	this->bytes_queued = this->bytes_written = 0;
 	this->n_process = this->n_write = 0;
-	this->n_write_err = this->n_overrun = this->n_underrun = 0;
-	this->hal_failed = false;
+	__atomic_store_n(&this->n_write_err, 0, __ATOMIC_RELAXED);
+	__atomic_store_n(&this->n_overrun, 0, __ATOMIC_RELAXED);
+	this->n_underrun = 0;
+	hal_failed_set(this, false);
 }
 
 /* The output half of hal_open(), which the input half has had to itself since
@@ -781,7 +816,7 @@ static void *writer_thread(void *arg)
 				/* Do not log per quantum - with a persistent failure that
 				 * would be a log storm. First error plus the summary is
 				 * enough. */
-				if (this->n_write_err++ == 0)
+				if (count_up(&this->n_write_err) == 0)
 					spa_log_warn(this->log, NAME " HAL write failed: %zd "
 							"(further ones are only counted)", w);
 				/* Three failures in a row mean the stream is gone. Writing
@@ -789,8 +824,8 @@ static void *writer_thread(void *arg)
 				 * cleanly - the next start reopens everything in hal_open().
 				 * The node gets there on its own as soon as WirePlumber
 				 * suspends it while idle. */
-				if (++consecutive_errors >= 3 && !this->hal_failed) {
-					this->hal_failed = true;
+				if (++consecutive_errors >= 3 && !hal_failed_get(this)) {
+					hal_failed_set(this, true);
 					spa_log_error(this->log, NAME " HAL takes nothing any more - "
 							"playback stopped. The next start will "
 							"reopen it.");
@@ -807,6 +842,44 @@ static void *writer_thread(void *arg)
 
 	free(buf);
 	return NULL;
+}
+
+/* Capture: put what the HAL delivered into the ring. Returns false if it was
+ * dropped because the ring was full. Called only from reader_thread(). */
+static bool capture_push(struct impl *this, const uint8_t *buf, size_t size)
+{
+	uint32_t idx;
+	int32_t filled;
+
+	/* The reader thread is the PRODUCER of the ring and only ever moves
+	 * the write index. When the ring is full it drops what it just read -
+	 * the newest block, whole, so frames stay aligned - and raises
+	 * ring_overflowed. The consumer, process_capture(), sees the flag
+	 * and skips ITS read index forward to the newest audio, so capture
+	 * still does not fall behind.
+	 *
+	 * It used to make room itself by advancing the read index here.
+	 * That is the consumer's index: process() may be in the middle of
+	 * copying from exactly that region, and its read_update then moved
+	 * the index BACK - the same audio came out twice, and the fill
+	 * jumped by whatever the two disagreed on. An even older version of
+	 * that code added the fill level on top and pushed the read index
+	 * PAST the write index (negative fill, silence, an underrun, the
+	 * whole ring thrown away). Neither can happen now: the consumer
+	 * skips from its own snapshot of the fill, the write index only
+	 * grows behind its back, so the read index never overtakes it. */
+	filled = spa_ringbuffer_get_write_index(&this->ring, &idx);
+	if (filled < 0 || (size_t) filled + size > RING_SIZE) {
+		if (count_up(&this->n_overrun) == 0)
+			spa_log_warn(this->log, NAME " ring buffer full, capture drops "
+					"audio (further ones are only counted)");
+		__atomic_store_n(&this->ring_overflowed, true, __ATOMIC_RELEASE);
+		return false;
+	}
+	spa_ringbuffer_write_data(&this->ring, this->ring_data, RING_SIZE,
+			idx & (RING_SIZE - 1), buf, (uint32_t) size);
+	spa_ringbuffer_write_update(&this->ring, idx + (uint32_t) size);
+	return true;
 }
 
 /* Capture: pa_droid_stream_read blocks until the next HAL period and thereby
@@ -826,8 +899,6 @@ static void *reader_thread(void *arg)
 
 	while (true) {
 		ssize_t r;
-		uint32_t idx;
-		int32_t filled;
 		bool run;
 
 		pthread_mutex_lock(&this->lock);
@@ -838,11 +909,11 @@ static void *reader_thread(void *arg)
 
 		r = pa_droid_stream_read(this->stream, buf, chunk);
 		if (r <= 0) {
-			if (this->n_write_err++ == 0)
+			if (count_up(&this->n_write_err) == 0)
 				spa_log_warn(this->log, NAME " HAL read failed: %zd "
 						"(further ones are only counted)", r);
-			if (++consecutive_errors >= 3 && !this->hal_failed) {
-				this->hal_failed = true;
+			if (++consecutive_errors >= 3 && !hal_failed_get(this)) {
+				hal_failed_set(this, true);
 				spa_log_error(this->log, NAME " HAL delivers nothing any more - "
 						"capture stopped. The next start will "
 						"reopen it.");
@@ -858,27 +929,7 @@ static void *reader_thread(void *arg)
 		this->bytes_written += (uint64_t) r;
 		this->n_write++;
 
-		filled = spa_ringbuffer_get_write_index(&this->ring, &idx);
-		if (filled + r > (int32_t) RING_SIZE) {
-			/* Nobody is picking the data up - drop the oldest rather than the
-			 * newest, otherwise capture falls further and further behind.
-			 *
-			 * Free exactly the excess, no more: the new read index is where
-			 * the ring is full again once these r bytes are in, and idx is
-			 * already the WRITE index, so `filled` must not be added to it a
-			 * second time. It used to be, which pushed the read index PAST
-			 * the write index - process() then saw a negative fill, padded
-			 * the buffer with silence and counted an underrun, and the whole
-			 * ring was thrown away instead of the few bytes too many. */
-			if (this->n_overrun++ == 0)
-				spa_log_warn(this->log, NAME " ring buffer full, capture drops "
-						"oldest data (further ones are only counted)");
-			spa_ringbuffer_read_update(&this->ring,
-					idx + (int32_t) r - (int32_t) RING_SIZE);
-		}
-		spa_ringbuffer_write_data(&this->ring, this->ring_data, RING_SIZE,
-				idx & (RING_SIZE - 1), buf, (uint32_t) r);
-		spa_ringbuffer_write_update(&this->ring, idx + (uint32_t) r);
+		capture_push(this, buf, (size_t) r);
 	}
 
 	free(buf);
@@ -892,6 +943,7 @@ static int writer_start(struct impl *this)
 	/* Empty the ring: an aborted run must not let the next one start with
 	 * stale material. The graph is not running yet at this point. */
 	spa_ringbuffer_init(&this->ring);
+	__atomic_store_n(&this->ring_overflowed, false, __ATOMIC_RELAXED);
 	this->running = true;
 	this->drain = true;
 	/* pthread_create RETURNS the error number and does not touch errno -
@@ -927,11 +979,11 @@ static void writer_stop(struct impl *this, bool drain)
 			this->n_write, (unsigned long long) this->bytes_written);
 	if (this->n_underrun)
 		DIAG(this, "%u blocks padded with silence (ring was empty)", this->n_underrun);
-	if (this->n_write_err || this->n_overrun)
+	if (count_get(&this->n_write_err) || count_get(&this->n_overrun))
 		spa_log_warn(this->log, NAME " trouble during the run: %u rejected HAL %s, "
 				"%u dropped blocks (ring full)",
-				this->n_write_err, this->capture ? "Reads" : "Writes",
-				this->n_overrun);
+				count_get(&this->n_write_err), this->capture ? "Reads" : "Writes",
+				count_get(&this->n_overrun));
 }
 
 /* Close the HAL stream and open it again, resuming the graph if it was
@@ -1072,9 +1124,9 @@ static int impl_send_command(void *object, const struct spa_command *command)
 		 * back to the same dead stream, and process() went on dropping
 		 * every buffer. During a call the stream is what holds the HAL,
 		 * so it is given another try instead of being closed. */
-		if (this->hal_failed) {
+		if (hal_failed_get(this)) {
 			if (this->mode_holds_hal)
-				this->hal_failed = false;
+				hal_failed_set(this, false);
 			else
 				hal_close(this);
 		}
@@ -1405,6 +1457,19 @@ static int process_capture(struct impl *this)
 	want = SPA_MIN(d->maxsize, this->quantum * stride);
 
 	avail = spa_ringbuffer_get_read_index(&this->ring, &idx);
+	/* The reader thread had to drop audio because the ring was full: skip
+	 * the backlog and deliver the newest. Only this function moves the read
+	 * index; the skip comes from this snapshot of the fill, which can only
+	 * have grown since, so the read index never overtakes the write index.
+	 * Whole frames, so the channels do not swap. */
+	if (__atomic_exchange_n(&this->ring_overflowed, false, __ATOMIC_ACQ_REL) &&
+	    avail > (int32_t) want) {
+		uint32_t skip = (uint32_t) avail - want;
+		skip -= skip % stride;
+		idx += skip;
+		avail -= (int32_t) skip;
+		spa_ringbuffer_read_update(&this->ring, idx);
+	}
 	take = SPA_MIN((uint32_t) SPA_MAX(avail, 0), want);
 	if (take > 0) {
 		spa_ringbuffer_read_data(&this->ring, this->ring_data, RING_SIZE,
@@ -1459,14 +1524,14 @@ static int impl_process(void *object)
 
 	/* If the HAL takes nothing any more, stop filling the ring - otherwise it
 	 * overflows and we count losses for nothing. */
-	if (this->hal_failed) {
+	if (hal_failed_get(this)) {
 		io->status = SPA_STATUS_NEED_DATA;
 		return SPA_STATUS_NEED_DATA;
 	}
 
 	filled = spa_ringbuffer_get_write_index(&this->ring, &idx);
 	if (filled + size > RING_SIZE) {
-		if (this->n_overrun++ == 0)
+		if (count_up(&this->n_overrun) == 0)
 			spa_log_warn(this->log, NAME " ring buffer full, %u bytes dropped "
 					"(further ones are only counted)", size);
 	} else {

@@ -1733,8 +1733,8 @@ static bool wrote_three(void) { return hal_stub.writes >= 3; }
 static bool read_once(void) { return hal_stub.reads >= 1; }
 
 static struct impl *failing_node;
-static bool gave_up(void) { return failing_node->hal_failed; }
-static bool overran(void) { return failing_node->n_overrun > 0; }
+static bool gave_up(void) { return hal_failed_get(failing_node); }
+static bool overran(void) { return count_get(&failing_node->n_overrun) > 0; }
 
 static int start(struct impl *this)
 {
@@ -1925,7 +1925,7 @@ static void test_reader_failures(void)
 	failing_node = this;
 	negotiate(this, 48000, 2);
 	start(this);
-	check("the ring fills up and the oldest audio is dropped",
+	check("the ring fills up and the reader drops what does not fit",
 			wait_until(overran));
 	pause_node(this);
 	{
@@ -1940,6 +1940,174 @@ static void test_reader_failures(void)
 				RING_SIZE, avail);
 		check("the read index never overtakes the write index", avail >= 0);
 	}
+	free_node(this);
+}
+
+/* One capture cycle: the graph hands back the buffer of the last cycle (still
+ * in io->buffer_id) and gets a fresh one. Returns that one's words. */
+static const uint32_t *capture_cycle(struct impl *this, struct spa_io_buffers *io)
+{
+	io->status = SPA_STATUS_OK;
+	spa_node_process(&this->node);
+	if (io->status != SPA_STATUS_HAVE_DATA || io->buffer_id >= this->port.n_buffers)
+		return NULL;
+	return this->port.buffers[io->buffer_id].outbuf->datas[0].data;
+}
+
+/* The reader thread is the producer of the ring, process() the consumer.
+ * Each moves only its own index - otherwise the reader, making room in a full
+ * ring, moved the read index under a process() that was copying from it, and
+ * process()'s own update then put it back: the same audio twice. */
+static void test_capture_overrun(void)
+{
+	struct impl *this;
+	static struct testbuf t[2];
+	struct spa_buffer *ptrs[2];
+	struct spa_io_buffers io = { 0 };
+	uint32_t block[1024], ridx, widx, n = 0, i;
+	const uint32_t *got;
+	int32_t avail;
+	bool ok;
+
+	section("a full capture ring: who may move which index");
+	reset_all();
+	this = make_node(true, playback_info());
+	if (!check("the node is there", this != NULL))
+		return;
+	negotiate(this, 48000, 2);
+	this->quantum = 256;             /* 1024 B = 256 frames per cycle */
+	testbuf_init(&t[0], 4096);
+	testbuf_init(&t[1], 4096);
+	ptrs[0] = &t[0].buf;
+	ptrs[1] = &t[1].buf;
+	spa_node_port_use_buffers(&this->node, this->dir, 0, 0, ptrs, 2);
+	spa_node_port_set_io(&this->node, this->dir, 0, SPA_IO_Buffers, &io, sizeof(io));
+
+	/* Fill the ring with numbered frames, 4 kB at a time, as the reader
+	 * thread would. */
+	for (i = 0; i < RING_SIZE / sizeof(block); i++) {
+		uint32_t k;
+		for (k = 0; k < SPA_N_ELEMENTS(block); k++)
+			block[k] = ++n;
+		capture_push(this, (uint8_t *) block, sizeof(block));
+	}
+	avail = spa_ringbuffer_get_read_index(&this->ring, &ridx);
+	check_int("the ring is full", RING_SIZE, avail);
+	check_int("without a loss so far", 0, count_get(&this->n_overrun));
+
+	for (i = 0; i < SPA_N_ELEMENTS(block); i++)
+		block[i] = ++n;
+	check("one more block does not fit and is dropped",
+			!capture_push(this, (uint8_t *) block, sizeof(block)));
+	check_int("and counted", 1, count_get(&this->n_overrun));
+	{
+		uint32_t r2;
+		avail = spa_ringbuffer_get_read_index(&this->ring, &r2);
+		check_int("the producer did NOT touch the read index", ridx, r2);
+		check_int("nor overwrite what was still unread", RING_SIZE, avail);
+	}
+	spa_ringbuffer_get_write_index(&this->ring, &widx);
+
+	got = capture_cycle(this, &io);
+	if (!check("the graph gets a buffer", got != NULL))
+		goto out;
+	{
+		uint32_t r2;
+		spa_ringbuffer_get_read_index(&this->ring, &r2);
+		check_int("the consumer skipped to the newest audio itself",
+				(int64_t) widx, (int64_t) r2);
+	}
+	/* The newest 256 frames before the dropped block. */
+	ok = true;
+	for (i = 0; i < 256; i++)
+		ok &= got[i] == RING_SIZE / 4 - 256 + 1 + i;
+	check("and delivered the newest audio, not 1.4 s old material", ok);
+	check_int("the overflow was handled once, not on every cycle", 0,
+			__atomic_load_n(&this->ring_overflowed, __ATOMIC_RELAXED));
+
+	/* Recording goes on: no frame twice, none out of order. */
+	{
+		uint32_t last = got[255], k;
+		for (k = 0; k < SPA_N_ELEMENTS(block); k++)
+			block[k] = ++n;
+		check("after the skip there is room again",
+				capture_push(this, (uint8_t *) block, sizeof(block)));
+		ok = true;
+		for (i = 0; i < 4; i++) {
+			got = capture_cycle(this, &io);
+			if (!got) {
+				ok = false;
+				break;
+			}
+			for (k = 0; k < 256; k++) {
+				ok &= got[k] > last;
+				last = got[k];
+			}
+		}
+		check("what follows comes once and in order", ok);
+		check_int("with the dropped block as the only gap",
+				(int64_t) n, (int64_t) last);
+	}
+	check("and the read index never overtook the write index",
+			spa_ringbuffer_get_read_index(&this->ring, &ridx) >= 0);
+out:
+	free_node(this);
+}
+
+static struct impl *racing_node;
+static bool raced_overrun(void) { return count_get(&racing_node->n_overrun) > 0; }
+
+/* The same with the real reader thread running against process(): numbered
+ * frames, and the consumer stalls now and then so the ring overflows while it
+ * reads. With the old code the read index went backwards under process() and
+ * frames came out twice; that is what this looks for. */
+static void test_capture_overrun_threaded(void)
+{
+	struct impl *this;
+	static struct testbuf t[2];
+	struct spa_buffer *ptrs[2];
+	struct spa_io_buffers io = { 0 };
+	uint32_t last = 0, cycles, dup = 0, nonzero = 0, k;
+	const uint32_t *got;
+
+	section("a full capture ring, with the reader thread running");
+	reset_all();
+	hal_stub.read_counts = true;
+	this = make_node(true, playback_info());
+	if (!check("the node is there", this != NULL))
+		return;
+	racing_node = this;
+	negotiate(this, 48000, 2);
+	this->quantum = 256;
+	testbuf_init(&t[0], 4096);
+	testbuf_init(&t[1], 4096);
+	ptrs[0] = &t[0].buf;
+	ptrs[1] = &t[1].buf;
+	spa_node_port_use_buffers(&this->node, this->dir, 0, 0, ptrs, 2);
+	spa_node_port_set_io(&this->node, this->dir, 0, SPA_IO_Buffers, &io, sizeof(io));
+	check_int("capture starts", 0, start(this));
+
+	check("the ring overflows while nobody reads", wait_until(raced_overrun));
+	for (cycles = 0; cycles < 20000; cycles++) {
+		got = capture_cycle(this, &io);
+		if (!got)
+			break;
+		for (k = 0; k < 256; k++) {
+			if (got[k] == 0)      /* silence for an empty ring */
+				continue;
+			nonzero++;
+			if (got[k] <= last)
+				dup++;
+			last = got[k];
+		}
+		if (cycles % 500 == 0)
+			usleep(20000);   /* a stall: the ring fills up meanwhile */
+	}
+	pause_node(this);
+	check("audio came through", nonzero > 0);
+	check_int("no frame came out twice or out of order", 0, dup);
+	check("and the ring overflowed more than once on the way",
+			count_get(&this->n_overrun) > 1);
 	free_node(this);
 }
 
@@ -2807,6 +2975,8 @@ int main(void)
 	test_writer_gives_up();
 	test_reader_thread();
 	test_reader_failures();
+	test_capture_overrun();
+	test_capture_overrun_threaded();
 	test_start_failure();
 	test_clock();
 	test_clock_without_hal();
