@@ -129,6 +129,13 @@ fi
 PLUGIN_DIR=${AUDIOCTL_PLUGIN_DIR:-/usr/lib/aarch64-linux-gnu/spa-0.2/droid}
 PWMODULE_DIR=${AUDIOCTL_PW_MODULE_DIR:-/usr/lib/aarch64-linux-gnu/pipewire-0.3}
 
+# The helper that writes the +CLCC-fixed copy of libspa-bluez5.so before
+# WirePlumber starts (tools/furios-audio-bluez5-fix.py). Its --check says what
+# the next WirePlumber start will do with the library installed NOW - which is
+# what status has to show after a PipeWire update, before anybody restarts.
+BLUEZ5_FIX=${AUDIOCTL_BLUEZ5_FIX:-$(first_existing /usr/local/bin/furios-audio-bluez5-fix \
+                                                   /usr/bin/furios-audio-bluez5-fix)}
+
 PROFILES="standard pw-tunnel pw-hal"
 DRY=0
 # Set by the "boot" command: write the configuration, start nothing. See uctl().
@@ -2043,6 +2050,22 @@ ofono_dropin_conflict() {
     [ "$vendor" = "/usr/sbin/ofonod --nodetach" ] || printf '%s' "$vendor"
 }
 
+# One line for status: is the +CLCC fix going to be in the plugin? Prints
+# "applied", "not-applied <reason>" or nothing when the helper is not
+# installed (then there is no drop-in either, and nothing to report).
+bluez5_fix_status() {
+    local out state reason
+    [ -x "$BLUEZ5_FIX" ] || return 0
+    out=$("$BLUEZ5_FIX" --check 2>/dev/null) || true
+    state=$(printf '%s\n' "$out" | sed -n 's/^clcc=//p' | head -1)
+    reason=$(printf '%s\n' "$out" | sed -n 's/^clcc-reason=//p' | head -1)
+    case "$state" in
+    applied)     printf 'applied' ;;
+    not-applied) printf 'not-applied %s' "${reason:-unknown reason}" ;;
+    *)           printf 'not-applied the helper gave no answer' ;;
+    esac
+}
+
 STATUS_UNITS="pulseaudio.service pipewire.service pipewire-pulse.service wireplumber.service furios-pw-tunnel.service"
 
 json_str() {
@@ -2054,7 +2077,7 @@ json_str() {
 # For the app: the same answers as "status", as JSON, so the window does not
 # depend on how a line for people is worded.
 status_json() {
-    local eff rec sticky fell sinks u first=1 conflict
+    local eff rec sticky fell sinks u first=1 conflict bz
     eff=$(effective_profile)
     rec=$(current_profile)
     sticky=$(cat "$STICKY" 2>/dev/null || echo standard)
@@ -2068,6 +2091,8 @@ status_json() {
     printf '  "fell_back": %s,\n' "$([ -n "$fell" ] && json_str "$fell" || echo null)"
     printf '  "ofono_dropin_conflict": %s,\n' "$([ -n "$conflict" ] && json_str "$conflict" || echo null)"
     printf '  "pulse_server": %s,\n' "$(json_str "$(pulse_owner)")"
+    bz=$(bluez5_fix_status)
+    printf '  "bluez5_fix": %s,\n' "$([ -n "$bz" ] && json_str "$bz" || echo null)"
     printf '  "sinks": ['
     sinks=$(pactl list sinks short 2>/dev/null | awk '{print $2}')
     for u in $sinks; do
@@ -2091,7 +2116,7 @@ status_json() {
 # a closing line naming the fix. Exit 1 when something does not work.
 status() {
     [ "${1:-}" = --json ] && { status_json; return 0; }
-    local eff rec sticky fell conflict sinks server u en ac problems=0 fix=
+    local eff rec sticky fell conflict sinks server u en ac problems=0 fix= bz
     local c_ok= c_bad= c_warn= c_b= c_0=
     if [ -t 1 ]; then
         c_ok=$'\033[32m'; c_bad=$'\033[31m'; c_warn=$'\033[33m'; c_b=$'\033[1m'; c_0=$'\033[0m'
@@ -2144,6 +2169,16 @@ status() {
         fix=${fix:-audioctl restart}
     fi
 
+    bz=$(bluez5_fix_status)
+    if [ -n "$bz" ]; then
+        _head bluetooth
+        case "$bz" in
+        applied) _ok "bluez5 fix applied - car kits see the call as call 1" ;;
+        *)       _warn "bluez5 fix not applied: ${bz#not-applied }"
+                 printf '        a car kit will not see calls - see furios-audio-bluez5-fix --check\n' ;;
+        esac
+    fi
+
     _head units
     for u in $STATUS_UNITS; do
         en=$(uctl is-enabled "$u" 2>&1 | head -1)
@@ -2190,7 +2225,7 @@ fi
 if [ "$(id -u)" -eq 0 ]; then
     for _v in AUDIOCTL_ETCU AUDIOCTL_LIB AUDIOCTL_STATE_DIR AUDIOCTL_WPCONF_DIR \
               AUDIOCTL_LEGACY_ETCU AUDIOCTL_LEGACY_WP AUDIOCTL_VENDOR_UNITS \
-              AUDIOCTL_PLUGIN_DIR AUDIOCTL_PW_MODULE_DIR \
+              AUDIOCTL_PLUGIN_DIR AUDIOCTL_PW_MODULE_DIR AUDIOCTL_BLUEZ5_FIX \
               AUDIOCTL_ORIGINAL_DIR AUDIOCTL_WPSTATE_DIR; do
         if [ -n "${!_v:-}" ]; then
             die "refusing to honour $_v as root - that would make this a way of deleting arbitrary files."

@@ -3190,12 +3190,35 @@ class BluetoothReconnect(unittest.TestCase):
             ReconnectBus(), "/org/freedesktop/login1/session/_31"))
 
 
+BUILD_ID = "ab" * 20
+
+
+def make_elf(payload, build_id=BUILD_ID, machine=183, note=True):
+    """A minimal little-endian ELF64 file: header, one PT_NOTE program header
+    with the GNU build-id, then payload. Enough for elf_identity()."""
+    import struct
+    desc = bytes.fromhex(build_id)
+    notes = struct.pack("<III", 4, len(desc), 3 if note else 1) + b"GNU\x00" \
+        + desc + b"\x00" * (-len(desc) % 4)
+    ehdr = bytearray(64)
+    ehdr[:6] = b"\x7fELF\x02\x01"
+    struct.pack_into("<H", ehdr, 18, machine)
+    struct.pack_into("<Q", ehdr, 32, 64)            # e_phoff
+    struct.pack_into("<HH", ehdr, 54, 56, 1)        # e_phentsize, e_phnum
+    phdr = bytearray(56)
+    struct.pack_into("<I", phdr, 0, 4)              # PT_NOTE
+    struct.pack_into("<Q", phdr, 8, 64 + 56)        # p_offset
+    struct.pack_into("<Q", phdr, 32, len(notes))    # p_filesz
+    return bytes(ehdr) + bytes(phdr) + notes + payload
+
+
 class Bluez5CallIndex(unittest.TestCase):
     """The copy of libspa-bluez5.so with +CLCC call index 1.
 
-    The rule under test is the safety one: a copy only when the instruction
-    sequence is there exactly once, and never a stale copy from an older
-    library - WirePlumber loads whatever sits in front in SPA_PLUGIN_DIR."""
+    The rule under test is the safety one: a copy only on aarch64, only for a
+    library whose build-id is on the list, only when the instruction sequence
+    is there exactly once - and never a stale copy from an older library:
+    WirePlumber loads whatever sits in front in SPA_PLUGIN_DIR."""
 
     def setUp(self):
         self.dir = tempfile.TemporaryDirectory()
@@ -3205,28 +3228,37 @@ class Bluez5CallIndex(unittest.TestCase):
         self.runtime = self.root / "run"
         self.runtime.mkdir()
         self.target = Path(bluez5fix.overlay_path(str(self.runtime)))
+        self.glob = str(self.root / "usr/lib/*/spa-0.2/bluez5/libspa-bluez5.so")
 
     def tearDown(self):
         self.dir.cleanup()
 
-    def fix(self, data):
+    def fix(self, data, known=None, machine="aarch64"):
         self.lib.write_bytes(data)
+        known = {BUILD_ID: "test"} if known is None else known
         with redirect_stderr(io.StringIO()) as err:
-            rc = bluez5fix.run(system_glob=str(self.root / "usr/lib/*/spa-0.2/"
-                                               "bluez5/libspa-bluez5.so"),
-                               runtime_dir=str(self.runtime))
+            rc = bluez5fix.run(system_glob=self.glob,
+                               runtime_dir=str(self.runtime),
+                               known=known, machine=machine)
         self.assertEqual(rc, 0)
         return err.getvalue()
 
+    def check(self, data, known=None, machine="aarch64"):
+        self.lib.write_bytes(data)
+        out = io.StringIO()
+        bluez5fix.check(system_glob=self.glob,
+                        known={BUILD_ID: "test"} if known is None else known,
+                        machine=machine, out=out)
+        return out.getvalue()
+
     def test_exactly_one_instruction_changes(self):
         before, after = b"\x01" * 64, b"\x02" * 64
-        self.fix(before + bluez5fix.SIGNATURE + after)
+        lib = make_elf(before + bluez5fix.SIGNATURE + after)
+        self.fix(lib)
         got = self.target.read_bytes()
-        at = 64 + bluez5fix.OFFSET_IN_SIGNATURE
+        at = lib.index(bluez5fix.SIGNATURE) + bluez5fix.OFFSET_IN_SIGNATURE
         self.assertEqual(got[at:at + 4], bluez5fix.INDEX_ONE)
-        self.assertEqual(got[:at] + got[at + 4:],
-                         (before + bluez5fix.SIGNATURE + after)[:at]
-                         + (before + bluez5fix.SIGNATURE + after)[at + 4:])
+        self.assertEqual(got[:at] + got[at + 4:], lib[:at] + lib[at + 4:])
 
     def test_the_new_instruction_is_mov_w2_1(self):
         # movz w2, #1: sf=0 opc=10 100101 hw=00 imm16=1 rd=2
@@ -3241,19 +3273,93 @@ class Bluez5CallIndex(unittest.TestCase):
         self.assertEqual(bluez5fix.SIGNATURE[at:at + 4], bluez5fix.LOAD_INDEX)
 
     def test_unknown_code_gets_no_copy(self):
-        said = self.fix(b"\x00" * 256)
+        said = self.fix(make_elf(b"\x00" * 256))
         self.assertFalse(self.target.exists())
         self.assertIn("loads the original", said)
 
     def test_code_that_appears_twice_gets_no_copy(self):
-        self.fix(bluez5fix.SIGNATURE + b"\x00" * 8 + bluez5fix.SIGNATURE)
+        self.fix(make_elf(bluez5fix.SIGNATURE + b"\x00" * 8
+                          + bluez5fix.SIGNATURE))
         self.assertFalse(self.target.exists())
 
     def test_a_stale_copy_goes_when_the_library_no_longer_fits(self):
-        self.fix(bluez5fix.SIGNATURE)
+        self.fix(make_elf(bluez5fix.SIGNATURE))
         self.assertTrue(self.target.exists())
-        self.fix(b"\x00" * 256)     # a PipeWire update changed the code
+        self.fix(make_elf(b"\x00" * 256))     # a PipeWire update changed the code
         self.assertFalse(self.target.exists())
+
+    def test_a_rebuild_with_the_same_code_is_still_refused(self):
+        # The sequence fits, but nobody has looked at this build: the field
+        # offsets around it could have moved without changing these bytes.
+        said = self.fix(make_elf(bluez5fix.SIGNATURE, build_id="cd" * 20))
+        self.assertFalse(self.target.exists())
+        self.assertIn("bluez5 fix not applied: library changed", said)
+        self.assertIn("cd" * 20, said)
+
+    def test_a_stale_copy_goes_when_the_build_id_changes(self):
+        self.fix(make_elf(bluez5fix.SIGNATURE))
+        self.assertTrue(self.target.exists())
+        self.fix(make_elf(bluez5fix.SIGNATURE, build_id="cd" * 20))
+        self.assertFalse(self.target.exists())
+
+    def test_only_on_aarch64(self):
+        said = self.fix(make_elf(bluez5fix.SIGNATURE), machine="x86_64")
+        self.assertFalse(self.target.exists())
+        self.assertIn("not aarch64", said)
+
+    def test_only_an_aarch64_library(self):
+        said = self.fix(make_elf(bluez5fix.SIGNATURE, machine=62))  # x86-64
+        self.assertFalse(self.target.exists())
+        self.assertIn("not an aarch64 library", said)
+
+    def test_no_build_id_no_copy(self):
+        said = self.fix(make_elf(bluez5fix.SIGNATURE, note=False))
+        self.assertFalse(self.target.exists())
+        self.assertIn("no build-id", said)
+
+    def test_not_an_elf_file_no_copy(self):
+        said = self.fix(bluez5fix.SIGNATURE)
+        self.assertFalse(self.target.exists())
+        self.assertIn("not an ELF file", said)
+
+    def test_the_journal_hears_about_a_mismatch_once(self):
+        lib = make_elf(bluez5fix.SIGNATURE, build_id="cd" * 20)
+        self.assertIn("not applied", self.fix(lib))
+        self.assertEqual(self.fix(lib), "")
+        # ...and again when the library changes once more.
+        self.assertIn("not applied",
+                      self.fix(make_elf(bluez5fix.SIGNATURE, build_id="ef" * 20)))
+
+    def test_the_state_file_says_what_happened(self):
+        self.fix(make_elf(bluez5fix.SIGNATURE))
+        state = Path(bluez5fix.state_path(str(self.runtime))).read_text()
+        self.assertIn("clcc=applied\n", state)
+        self.assertIn(f"build-id={BUILD_ID}\n", state)
+        self.fix(make_elf(b"\x00" * 64))
+        state = Path(bluez5fix.state_path(str(self.runtime))).read_text()
+        self.assertIn("clcc=not-applied\n", state)
+        self.assertIn("clcc-reason=library changed", state)
+
+    def test_check_writes_nothing(self):
+        out = self.check(make_elf(bluez5fix.SIGNATURE))
+        self.assertIn("clcc=applied\n", out)
+        self.assertFalse(self.target.exists())
+        self.assertFalse(os.path.exists(bluez5fix.state_path(str(self.runtime))))
+
+    def test_check_names_a_changed_library(self):
+        out = self.check(make_elf(bluez5fix.SIGNATURE, build_id="cd" * 20))
+        self.assertIn("clcc=not-applied\n", out)
+        self.assertIn("clcc-reason=library changed: build-id " + "cd" * 20, out)
+
+    def test_check_without_a_library(self):
+        out = io.StringIO()
+        bluez5fix.check(system_glob=str(self.root / "nothing/*.so"), out=out)
+        self.assertIn("clcc=not-applied\n", out.getvalue())
+        self.assertIn("found 0", out.getvalue())
+
+    def test_every_known_build_id_is_a_build_id(self):
+        for build_id in bluez5fix.KNOWN_LIBRARIES:
+            self.assertRegex(build_id, r"^[0-9a-f]{40}$")
 
     def test_no_runtime_dir_writes_nothing(self):
         with redirect_stderr(io.StringIO()), \
@@ -3271,11 +3377,22 @@ class Bluez5CallIndex(unittest.TestCase):
         if len(real) != 1:
             self.skipTest("no libspa-bluez5.so here")
         data = Path(real[0]).read_bytes()
-        patched, why = bluez5fix.patch(data)
+        patched, why, _ = bluez5fix.evaluate(data, machine="aarch64")
         if patched is None:
             self.skipTest(f"installed PipeWire differs: {why}")
         self.assertEqual(len(patched), len(data))
         self.assertEqual(sum(a != b for a, b in zip(patched, data)), 4)
+
+    def test_the_build_id_is_the_one_readelf_reads(self):
+        real = glob.glob(bluez5fix.SYSTEM_GLOB)
+        if len(real) != 1 or not shutil_real.which("readelf"):
+            self.skipTest("no libspa-bluez5.so or no readelf here")
+        out = subprocess_real.run(["readelf", "-n", real[0]], capture_output=True,
+                             text=True, env={"LC_ALL": "C"}).stdout
+        want = [l.split(":", 1)[1].strip() for l in out.splitlines()
+                if "Build ID:" in l]
+        self.assertEqual(bluez5fix.elf_identity(
+            Path(real[0]).read_bytes())[1], want[0])
 
     def test_the_drop_in_keeps_the_system_directory_behind_the_copy(self):
         conf = (ROOT / "systemd/wireplumber.service.d/"

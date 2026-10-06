@@ -172,6 +172,9 @@ with_audioctl() {
       # have the real ones installed - which is how they failed on a runner
       # while passing here.
       PLUGIN_DIR="$STUBDIR/plugin"; PWMODULE_DIR="$PLUGIN_DIR"
+      # The +CLCC helper, likewise: the phone's own would report the phone's
+      # own library. A test that wants it writes a stub here.
+      BLUEZ5_FIX="$STUBDIR/bluez5-fix"
       export AUDIOCTL_ETCU="$ETCU" AUDIOCTL_DROPIN="$DROPIN" \
              AUDIOCTL_WPCONF_DIR="$WPUSER" \
              AUDIOCTL_PLUGIN_DIR="$PLUGIN_DIR" AUDIOCTL_PW_MODULE_DIR="$PLUGIN_DIR"
@@ -1109,6 +1112,23 @@ check "and that is a failure, with the fix named" "1 yes" \
     "$(with_audioctl 'echo pw-hal > "$STICKY"; out=$(status); rc=$?; printf "%s " $rc; printf "%s" "$out" | grep -q "fix with: audioctl set standard" && echo yes || echo no')"
 check "status --json is JSON with the profile" "standard" \
     "$(with_audioctl 'status --json' | python3 -c 'import json,sys; print(json.load(sys.stdin)["profile"])' 2>/dev/null)"
+# The +CLCC fix: a PipeWire update must not drop it without a word.
+check "without the helper there is no bluetooth part" "no" \
+    "$(with_audioctl 'status' | grep -q "^== bluetooth" && echo yes || echo no)"
+printf '#!/bin/sh\nprintf "clcc=applied\\nbuild-id=abc\\n"\n' > "$STUBDIR/bluez5-fix"
+chmod +x "$STUBDIR/bluez5-fix"
+check "an applied fix is ok" "yes" \
+    "$(with_audioctl 'status' | grep -q "ok    bluez5 fix applied" && echo yes || echo no)"
+printf '#!/bin/sh\nprintf "clcc=not-applied\\nclcc-reason=library changed: build-id 99 is not one this fix was checked against\\n"\n' \
+    > "$STUBDIR/bluez5-fix"
+check "a changed library is named as such" "yes" \
+    "$(with_audioctl 'status' | grep -q "warn  bluez5 fix not applied: library changed" && echo yes || echo no)"
+check "and the JSON carries it for the app" "not-applied library changed" \
+    "$(with_audioctl 'status --json' | python3 -c 'import json,sys; print(json.load(sys.stdin)["bluez5_fix"][:27])' 2>/dev/null)"
+printf '#!/bin/sh\nexit 1\n' > "$STUBDIR/bluez5-fix"
+check "a helper that answers nothing is not taken for applied" "yes" \
+    "$(with_audioctl 'status' | grep -q "bluez5 fix not applied: the helper gave no answer" && echo yes || echo no)"
+rm -f "$STUBDIR/bluez5-fix"
 check "no colour codes without a terminal" "no" \
     "$(with_audioctl 'status' | grep -q $'\033\\[' && echo yes || echo no)"
 check "the help lists every profile" "yes" \
@@ -1137,6 +1157,7 @@ run_audioctl() {
         AUDIOCTL_LEGACY_WP="$STUBDIR/legacy-wp" \
         AUDIOCTL_PLUGIN_DIR="$STUBDIR/plugin" \
         AUDIOCTL_PW_MODULE_DIR="$STUBDIR/plugin" \
+        AUDIOCTL_BLUEZ5_FIX="$STUBDIR/bluez5-fix" \
         VERIFY_TRIES=1 BT_HOLD_INTERVAL=0 bash ${AUDIOCTL_TRACE:+-x} "$HERE/../audioctl" "$@" 2>&1
 }
 mkdir -p "$STUBDIR/plugin"

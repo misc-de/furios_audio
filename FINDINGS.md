@@ -1751,6 +1751,16 @@ report and a patch against master are in
 format string, because string suffixes are merged by the linker and `%d`/`%u`
 have no copy of their own in that library.
 
+It patches only a library it knows: aarch64, a GNU build-id listed in the
+script (`KNOWN_LIBRARIES`), and the instruction sequence exactly once. The
+sequence check alone would have patched a rebuild that moved the struct field
+and kept the bytes. On any mismatch WirePlumber gets the untouched plugin, the
+journal says so once per library, and `audioctl status` shows `bluez5 fix not
+applied: library changed` - after a PipeWire update somebody has to look at
+the new build (`furios-audio-bluez5-fix --check`) and add its build-id.
+Building a fixed libspa-bluez5 from source was weighed and rejected: it
+would replace Debian's whole Bluetooth plugin with ours for a four-byte fix.
+
 ## Contacts do not reach the car - waiting for BlueZ 5.87
 
 The car asks for the phone book over PBAP when it connects, and obexd answers
