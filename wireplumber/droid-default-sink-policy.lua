@@ -28,6 +28,12 @@
 -- chain and walks it when a device disappears, and once a VoIP node has been
 -- in that chain it can be picked again. Measured: unplugging a headset mid
 -- playback left the default on droid-voip-sink and the phone silent.
+--
+-- The same holds for the echo canceller's nodes (droid-echo-cancel.lua), on
+-- both sides. As the default sink all music would run through webrtc; as the
+-- default source every recording would, and its own capture - pinned to
+-- droid-source, but the playback follows the default sink - could end up
+-- feeding itself.
 
 cutils = require ("common-utils")
 log = Log.open_topic ("s-node")
@@ -89,28 +95,52 @@ bluetooth_takes_over_hook = SimpleEventHook {
 
 bluetooth_takes_over_hook:register ()
 
+-- Which defaults must never land where, and where they go back to.
+NEVER_DEFAULT = {
+  ["default.audio.sink"] = {
+    back = "droid-sink",
+    names = { "droid-voip", "furios-echo-cancel-sink" },
+  },
+  ["default.audio.source"] = {
+    back = "droid-source",
+    names = { "furios-echo-cancel-source" },
+  },
+}
+
 voip_never_default_hook = SimpleEventHook {
   name = "node/droid-voip-never-default",
   interests = {
     EventInterest {
       Constraint { "event.type", "=", "metadata-changed" },
       Constraint { "metadata.name", "=", "default" },
-      Constraint { "event.subject.key", "=", "default.audio.sink" },
+      Constraint { "event.subject.key", "c", "default.audio.sink",
+                                             "default.audio.source" },
     },
   },
   execute = function (event)
-    local raw = event:get_properties () ["event.subject.value"]
-    if not raw then
+    local props = event:get_properties ()
+    local rule = NEVER_DEFAULT [props ["event.subject.key"] or "default.audio.sink"]
+    local raw = props ["event.subject.value"]
+    if not rule or not raw then
       return
     end
     local ok, parsed = pcall (function () return Json.Raw (raw):parse () end)
     local name = ok and parsed and parsed.name or nil
-    if not name or not string.find (name, "droid-voip", 1, true) then
+    if not name then
+      return
+    end
+    local banned = false
+    for _, part in ipairs (rule.names) do
+      if string.find (name, part, 1, true) then
+        banned = true
+      end
+    end
+    if not banned then
       return
     end
 
     local fallback = cutils.get_object_manager ("node"):lookup {
-      Constraint { "node.name", "=", "droid-sink" },
+      Constraint { "node.name", "=", rule.back },
     }
     local m = cutils.get_object_manager ("metadata"):lookup {
       Constraint { "metadata.name", "=", "default" },
@@ -118,9 +148,10 @@ voip_never_default_hook = SimpleEventHook {
     if not fallback or not m then
       return
     end
-    log:info ("default sink landed on " .. name .. " - moving it back to droid-sink")
-    m:set (0, "default.configured.audio.sink", "Spa:String:JSON",
-           Json.Object { name = "droid-sink" }:to_string ())
+    local key = "default.configured." ..
+                (props ["event.subject.key"] or "default.audio.sink"):sub (9)
+    log:info ("default landed on " .. name .. " - moving it back to " .. rule.back)
+    m:set (0, key, "Spa:String:JSON", Json.Object { name = rule.back }:to_string ())
   end,
 }
 

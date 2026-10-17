@@ -59,6 +59,8 @@ orig_install 644 wireplumber/droid-bluetooth-call.lua \
     /usr/local/share/wireplumber/scripts/monitors/droid-bluetooth-call.lua
 orig_install 644 wireplumber/droid-bluetooth-codec.lua \
     /usr/local/share/wireplumber/scripts/monitors/droid-bluetooth-codec.lua
+orig_install 644 wireplumber/droid-echo-cancel.lua \
+    /usr/local/share/wireplumber/scripts/monitors/droid-echo-cancel.lua
 orig_install 644 wireplumber/50-droid.conf /usr/local/share/wireplumber/wireplumber.conf.d/50-droid.conf
 orig_install 644 wireplumber/51-bluez-ofono.conf /usr/local/share/wireplumber/wireplumber.conf.d/51-bluez-ofono.conf
 

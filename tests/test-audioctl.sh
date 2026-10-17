@@ -1849,4 +1849,35 @@ check "an enabled unit reads as on" "ringback=on" "$(run_ctl ringback | grep rin
 check_status "an unknown word is refused" 1 run_ctl ringback maybe
 rm -f "$STUBDIR/systemctl"
 
+printf '\necho cancellation for calls in apps: off until switched on\n'
+rm -f "$STUBDIR/state/echo-cancel" "$STUBDIR/wpctl.args"
+make_recording_stub wpctl 0 ""
+echo pw-hal > "$STUBDIR/state/profile"
+check "nothing chosen reads as off" "echo-cancel=off" "$(run_ctl echo-cancel | grep echo-cancel=)"
+check "under pw-hal it is offered" "offered=yes" "$(run_ctl echo-cancel | grep offered)"
+stub pactl 0 "60	droid-sink	PipeWire	s16le 2ch 48000Hz	SUSPENDED"
+check "without the canceller's sink it says not loaded" "loaded=no" "$(run_ctl echo-cancel | grep loaded)"
+stub pactl 0 "60	droid-sink	PipeWire	s16le 2ch 48000Hz	SUSPENDED
+71	furios-echo-cancel-sink	PipeWire	float32le 1ch 48000Hz	SUSPENDED"
+check "with it, loaded" "loaded=yes" "$(run_ctl echo-cancel | grep loaded)"
+run_ctl echo-cancel on >/dev/null
+check "on is kept" "on" "$(cat "$STUBDIR/state/echo-cancel")"
+check "and handed to WirePlumber" "yes" \
+    "$(grep -q -- '--save furios.echo-cancel true' "$STUBDIR/wpctl.args" && echo yes || echo no)"
+check "status follows" "echo-cancel=on" "$(run_ctl echo-cancel | grep echo-cancel=)"
+rm -f "$STUBDIR/wpctl.args"
+run_ctl echo-cancel off >/dev/null
+check "off is kept" "off" "$(cat "$STUBDIR/state/echo-cancel")"
+check "and handed to WirePlumber" "yes" \
+    "$(grep -q -- '--save furios.echo-cancel false' "$STUBDIR/wpctl.args" && echo yes || echo no)"
+rm -f "$STUBDIR/wpctl.args"
+echo standard > "$STUBDIR/state/profile"
+check "under PulseAudio it is not offered" "offered=no" "$(run_ctl echo-cancel | grep offered)"
+run_ctl echo-cancel on >/dev/null
+check "a choice made there is kept for pw-hal" "on" "$(cat "$STUBDIR/state/echo-cancel")"
+check "but WirePlumber is left alone" "no" \
+    "$([ -s "$STUBDIR/wpctl.args" ] && echo yes || echo no)"
+check_status "an unknown word is refused" 1 run_ctl echo-cancel maybe
+rm -f "$STUBDIR/wpctl" "$STUBDIR/wpctl.args" "$STUBDIR/state/echo-cancel"
+
 summary

@@ -208,6 +208,7 @@ remove_unowned \
     /usr/share/wireplumber/scripts/monitors/droid-default-sink-policy.lua \
     /usr/share/wireplumber/scripts/monitors/droid-bluetooth-call.lua \
     /usr/share/wireplumber/scripts/monitors/droid-bluetooth-codec.lua \
+    /usr/share/wireplumber/scripts/monitors/droid-echo-cancel.lua \
     /usr/share/wireplumber/scripts/monitors/droid-bluetooth-takes-over.lua \
     /usr/share/wireplumber/wireplumber.conf.d/50-droid.conf \
     /usr/share/wireplumber/wireplumber.conf.d/50-droid.conf.off \
@@ -264,6 +265,7 @@ remove_ours /usr/local/share/wireplumber/scripts/monitors/droid.lua \
            /usr/local/share/wireplumber/scripts/monitors/droid-default-sink-policy.lua \
            /usr/local/share/wireplumber/scripts/monitors/droid-bluetooth-call.lua \
            /usr/local/share/wireplumber/scripts/monitors/droid-bluetooth-codec.lua \
+           /usr/local/share/wireplumber/scripts/monitors/droid-echo-cancel.lua \
            /usr/local/share/wireplumber/scripts/monitors/droid-bluetooth-takes-over.lua \
            /usr/local/share/wireplumber/wireplumber.conf.d/50-droid.conf \
            /usr/local/share/wireplumber/wireplumber.conf.d/50-droid.conf.off \

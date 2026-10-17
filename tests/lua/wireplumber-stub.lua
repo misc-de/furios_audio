@@ -277,6 +277,10 @@ function M.install()
     parseParam = function (pod, name)
       return M.parse_param(pod, name)
     end,
+    -- As common-utils has it: a property string, "true" or "1".
+    parseBool = function (var)
+      return var and (var:lower () == "true" or var == "1") or false
+    end,
   }
   package.loaded["common-utils"] = cutils
   return cutils

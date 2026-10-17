@@ -941,6 +941,66 @@ ringback() {
     esac
 }
 
+# Calls in apps - a browser, a messenger - had no echo cancellation: the
+# Claude web client over the speaker kept hearing itself (2026-10-17).
+# pipewire-hal.conf loads PipeWire's webrtc canceller, and with this on,
+# droid-echo-cancel.lua sends every stream of an app that plays and records
+# at once through it. Off after an install: 10-20 % of a core while a
+# conversation runs. Only under pw-hal - PulseAudio has no such node here.
+#
+# The state file is the choice and survives a reinstall; WirePlumber's own
+# stored setting is only the copy it reads live, written again with every
+# switch to pw-hal (sm-settings did not survive the reinstall of 2026-09-30).
+ECHO_CANCEL=$STATE_DIR/echo-cancel
+ECHO_CANCEL_SETTING=furios.echo-cancel
+
+echo_cancel_on() {
+    [ "$(cat "$ECHO_CANCEL" 2>/dev/null)" = on ]
+}
+
+echo_cancel_sync_wireplumber() {
+    [ "$(current_profile 2>/dev/null)" = pw-hal ] || return 0
+    wpctl settings --save "$ECHO_CANCEL_SETTING" \
+        "$(echo_cancel_on && echo true || echo false)" >/dev/null 2>&1 || true
+}
+
+# audioctl echo-cancel [status|on|off]
+echo_cancel() {
+    local want=${1:-status} p
+    p=$(current_profile 2>/dev/null)
+    case "$want" in
+    status)
+        printf 'echo-cancel=%s\n' "$(echo_cancel_on && echo on || echo off)"
+        if [ "$p" = pw-hal ]; then echo 'offered=yes'; else echo 'offered=no'; fi
+        # The canceller only exists once PipeWire has read the configuration
+        # that loads it - after install-hal.sh that takes a restart.
+        if pactl list short sinks 2>/dev/null | awk '{print $2}' \
+                | grep -qx furios-echo-cancel-sink; then
+            echo 'loaded=yes'
+        else
+            echo 'loaded=no'
+        fi
+        return 0 ;;
+    on|off) ;;
+    *) die "echo-cancel needs on, off or status" ;;
+    esac
+    if [ "$DRY" = 1 ]; then
+        echo "[dry-run] echo-cancel $want"
+        return 0
+    fi
+    write_state "$ECHO_CANCEL" "$want" || die "cannot write $ECHO_CANCEL"
+    if [ "$p" != pw-hal ]; then
+        info "echo cancellation $want - kept for pw-hal; under $p it does nothing"
+        return 0
+    fi
+    echo_cancel_sync_wireplumber
+    if [ "$want" = on ]; then
+        info "echo cancellation on: apps that play and record at once go through it"
+    else
+        info "echo cancellation off"
+    fi
+}
+
 # The other half of the safety net: furios-audio-apply.service writes the
 # configuration before the stack, this one checks after it. Enabled the same
 # way - only the user can enable their own unit.
@@ -1157,7 +1217,8 @@ switch_to() {
                 fi ;;
         esac
         # After the state file: the helpers' ExecCondition reads it.
-        [ "$p" = pw-hal ] && { pw_helpers start; bt_extras_sync_wireplumber; }
+        [ "$p" = pw-hal ] && { pw_helpers start; bt_extras_sync_wireplumber
+                               echo_cancel_sync_wireplumber; }
         [ "$p" != standard ] && info "please check telephony: call, ringtone, earpiece/speaker."
         return "$kept"
     fi
@@ -2044,6 +2105,10 @@ audioctl - switch the audio stack
   audioctl ringback [status|on|off]
                                the ringback tone for outgoing calls on
                                networks that send none (off until switched on)
+  audioctl echo-cancel [status|on|off]
+                               echo cancellation for calls in apps - a
+                               browser, a messenger (pw-hal; off until
+                               switched on)
   audioctl bt-codec <codec> --device <address>
                                the same for one headset only; "default" makes
                                it follow the setting for all again
@@ -2310,6 +2375,7 @@ set -- ${args+"${args[@]}"}
 case "${1:-status}" in
     toggle|try|set|boot|boot-check|restart|revert) record_originals ;;
     bt-extras) case "${2:-status}" in on|off) record_originals ;; esac ;;
+    echo-cancel) case "${2:-status}" in on|off) record_originals ;; esac ;;
     bt-codec)  case "${2:-status}" in status) ;; *) record_originals ;; esac ;;
 esac
 case "${1:-status}" in
@@ -2326,6 +2392,7 @@ case "${1:-status}" in
     helper-allowed) [ $# -ge 2 ] || die "unit missing."; helper_allowed "$2" ;;
     bt-extras) bt_extras "${2:-status}" ;;
     ringback)  ringback "${2:-status}" ;;
+    echo-cancel) echo_cancel "${2:-status}" ;;
     is)     [ $# -ge 2 ] || die "profile missing."
             [ "$(current_profile 2>/dev/null)" = "$2" ] ;;
     try)    [ $# -ge 2 ] || die "profile missing."; switch_to "$2" try ;;

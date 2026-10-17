@@ -72,6 +72,9 @@ class ConfigGenerator(unittest.TestCase):
             "}\n"
             "context.objects = [\n"
             "]\n"
+            "context.modules = [\n"
+            "    { name = libpipewire-module-rt }\n"
+            "]\n"
         )
 
     def run_gen(self, text, tmp):
@@ -134,6 +137,53 @@ class ConfigGenerator(unittest.TestCase):
             res, _ = self.run_gen(without, Path(d))
             self.assertNotEqual(res.returncode, 0)
             self.assertIn("context.objects", res.stderr)
+
+    def test_adds_the_echo_canceller_once(self):
+        """droid-echo-cancel.lua routes to nodes only this module creates."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            res, dst = self.run_gen(self.template, Path(d))
+            self.assertEqual(res.returncode, 0, res.stderr)
+            out = dst.read_text()
+            self.assertEqual(out.count("libpipewire-module-echo-cancel"), 1)
+            for name in ("furios-echo-cancel-sink", "furios-echo-cancel-source"):
+                self.assertIn(name, out)
+            # Inside the module list, after what was there - not after it.
+            modules = out[out.index("context.modules"):]
+            self.assertLess(modules.index("module-rt"),
+                            modules.index("module-echo-cancel"))
+            self.assertLess(modules.index("module-echo-cancel"),
+                            modules.index("\n]"))
+
+    def test_the_canceller_never_keeps_the_microphone_open(self):
+        """Unused it must cost nothing: passive inner streams, mic pinned."""
+        out = gen.ECHO_CANCEL
+        self.assertEqual(out.count("node.passive  = true")
+                         + out.count("node.passive = true"), 2)
+        self.assertIn('target.object = "droid-source"', out)
+        # Never a candidate for the default against droid-sink's 1000.
+        self.assertEqual(out.count("priority.session = 1\n"), 2)
+
+    def test_it_notices_a_template_that_already_has_a_canceller(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            already = self.template.replace(
+                "    { name = libpipewire-module-rt }\n",
+                "    { name = libpipewire-module-rt }\n"
+                "    { name = libpipewire-module-echo-cancel }\n")
+            res, dst = self.run_gen(already, Path(d))
+            self.assertEqual(res.returncode, 0)
+            self.assertIn("echo canceller is already", res.stderr)
+            self.assertEqual(dst.read_text().count("module-echo-cancel"), 1)
+
+    def test_it_says_so_when_the_module_list_is_gone(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            without = self.template.replace(
+                "context.modules = [\n    { name = libpipewire-module-rt }\n]\n", "")
+            res, _ = self.run_gen(without, Path(d))
+            self.assertNotEqual(res.returncode, 0)
+            self.assertIn("context.modules", res.stderr)
 
     def test_marks_the_file_as_generated(self):
         import tempfile
