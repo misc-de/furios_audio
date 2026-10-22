@@ -909,6 +909,27 @@ rather than being left without a stream.
 
 ---
 
+## Pausing is half of a handover
+
+2026-10-22 09:22: a podcast on the earbuds, earbuds out on the way to the car.
+The service logged "nothing was playing yet" - correctly: the earbuds had
+already paused the player themselves (in-ear detection sends an AVRCP pause
+before the link drops; bluetoothd does not log it, the evidence is the player
+being `Paused` at the disconnect while nothing on the phone had pressed pause).
+The car connected 12 s later, its A2DP transport came up 4 s after that, and
+nothing pressed play. Silence until it was done by hand.
+
+Now a pause that belongs to a disconnect is remembered: one this service made,
+or one the player reported up to `HANDOVER_LOOKBACK_S` (30 s) before the link
+dropped. If a **different** audio device connects within `HANDOVER_WINDOW_S`
+(10 min) and brings up a `MediaTransport1`, the player gets `Play`
+`RESUME_DELAY_MS` later, so WirePlumber has moved the output first and nothing
+starts on the loudspeaker. Not resumed: the same earbuds coming back, a player
+that was played, paused again or stopped in between, a player no longer
+`Paused` by then, a device without A2DP within `TRANSPORT_WAIT_S`.
+
+---
+
 ## One look at a disconnect is not enough
 
 Earbuds ran out of battery at 06:31:30 with a podcast playing.

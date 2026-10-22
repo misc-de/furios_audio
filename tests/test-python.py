@@ -287,10 +287,19 @@ class FakeBus:
         self.status = status or {}
         self.fail_on = fail_on or set()
         self.paused = []
+        self.played = []
         self.subscriptions = []
 
     def call_sync(self, dest, path, iface, method, args, reply, flags,
                   timeout, cancellable):
+        if method == "GetNameOwner":
+            # GLib.Variant("(s)", (name,)) - the stub keeps its arguments.
+            return FakeVariant([OWNERS.get(args._args[1][0], ":1.99")])
+        if method == "Play":
+            if dest in self.fail_on:
+                raise watcher.GLib.Error("will not play")
+            self.played.append(dest)
+            return None
         if method == "ListNames":
             if "ListNames" in self.fail_on:
                 raise watcher.GLib.Error("no bus today")
@@ -309,6 +318,11 @@ class FakeBus:
     def signal_subscribe(self, *args):
         self.subscriptions.append(args)
         return 1
+
+
+# The unique names behind the players: signals come from these, Pause goes to
+# the well-known name - the handover has to know they are the same player.
+OWNERS = {"org.mpris.MediaPlayer2.emilia": ":1.7"}
 
 
 class BluezBus:
@@ -556,7 +570,9 @@ class PauseOnDisconnect(unittest.TestCase):
             self.assertTrue(ran, "it has to keep running, not return at once")
 
             system, session = buses[0], buses[1]
-            self.assertEqual(len(system.subscriptions), 1)
+            self.assertEqual(len(system.subscriptions), 2,
+                             "device state, and new audio links")
+            self.assertEqual(len(session.subscriptions), 1, "player state")
             handler = system.subscriptions[0][-1]
 
             # A Bluetooth device losing its connection: pause whatever plays.
@@ -661,6 +677,201 @@ class PauseOnDisconnect(unittest.TestCase):
         self.assertIn('"Pause"', src)
         self.assertNotIn("set-sink-mute", src)
         self.assertNotIn("set_mute", src)
+
+
+class Handover(unittest.TestCase):
+    """Earbuds out, car in: the podcast goes on in the car.
+
+    2026-10-22: the earbuds paused the podcast themselves on leaving the ear,
+    dropped the link, the car connected 12 s later - and it stayed silent until
+    play was pressed by hand.
+    """
+
+    EMILIA = "org.mpris.MediaPlayer2.emilia"
+    BUDS = "/org/bluez/hci0/dev_F4_9D"
+    CAR = "/org/bluez/hci0/dev_9C_DF"
+
+    def setUp(self):
+        self.now = [1000.0]
+        self.session = FakeBus(names=[self.EMILIA],
+                               status={":1.7": "Paused"})
+        self.h = watcher.Handover(self.session, clock=lambda: self.now[0])
+        self.out = io.StringIO()
+
+    def later(self, seconds):
+        self.now[0] += seconds
+
+    def run_quietly(self, fn, *args):
+        with redirect_stdout(self.out):
+            return fn(*args)
+
+    def buds_pause_then_drop(self, gap=5):
+        self.h.player_status(":1.7", "Paused")
+        self.later(gap)
+        self.run_quietly(self.h.device_left, self.BUDS, [])
+
+    def car_arrives(self, after=12):
+        self.later(after)
+        waits = self.run_quietly(self.h.device_came, self.CAR)
+        up = self.h.transport_up(self.CAR + "/sep1/fd0")
+        return waits, up, self.run_quietly(self.h.resume)
+
+    def test_the_morning_of_2026_10_22(self):
+        self.buds_pause_then_drop()
+        waits, up, resumed = self.car_arrives()
+        self.assertTrue(waits and up)
+        self.assertEqual(resumed, [":1.7"])
+        self.assertEqual(self.session.played, [":1.7"])
+
+    def test_a_pause_we_made_ourselves_goes_with_it(self):
+        """Earbuds ran flat while playing: we paused, the car takes over."""
+        self.run_quietly(self.h.device_left, self.BUDS, [self.EMILIA])
+        self.assertEqual(self.car_arrives()[2], [":1.7"])
+
+    def test_a_pause_a_retry_made_goes_with_it(self):
+        self.run_quietly(self.h.device_left, self.BUDS, [])
+        self.h.add_paused([self.EMILIA])
+        self.assertEqual(self.car_arrives()[2], [":1.7"])
+
+    def test_an_old_pause_is_your_own(self):
+        """Paused at the table, earbuds away a minute later: stays paused."""
+        self.buds_pause_then_drop(gap=watcher.HANDOVER_LOOKBACK_S + 1)
+        waits, _up, resumed = self.car_arrives()
+        self.assertFalse(waits)
+        self.assertEqual(self.session.played, [])
+
+    def test_ten_minutes_and_no_more(self):
+        self.buds_pause_then_drop()
+        waits, _up, _r = self.car_arrives(after=watcher.HANDOVER_WINDOW_S + 1)
+        self.assertFalse(waits)
+        self.assertEqual(self.session.played, [])
+
+    def test_ten_minutes_counts_from_the_disconnect(self):
+        self.buds_pause_then_drop()
+        self.assertEqual(self.car_arrives(after=watcher.HANDOVER_WINDOW_S - 5)[2],
+                         [":1.7"])
+
+    def test_the_same_earbuds_coming_back_do_not_resume(self):
+        self.buds_pause_then_drop()
+        self.later(20)
+        self.assertFalse(self.run_quietly(self.h.device_came, self.BUDS))
+        self.assertFalse(self.h.armed(), "and the car later gets nothing either")
+        self.assertEqual(self.session.played, [])
+
+    def test_pressing_play_yourself_ends_it(self):
+        self.buds_pause_then_drop()
+        self.later(30)
+        self.run_quietly(self.h.player_status, ":1.7", "Playing")
+        self.assertFalse(self.h.armed())
+
+    def test_stopping_ends_it(self):
+        self.buds_pause_then_drop()
+        self.run_quietly(self.h.player_status, ":1.7", "Stopped")
+        self.assertFalse(self.h.armed())
+
+    def test_a_player_no_longer_paused_is_left_alone(self):
+        """Whatever it is doing by the time the car is ready, it was not us."""
+        self.buds_pause_then_drop()
+        self.session.status[":1.7"] = "Stopped"
+        self.assertEqual(self.car_arrives()[2], [])
+        self.assertIn("not resuming", self.out.getvalue())
+
+    def test_only_the_new_devices_own_link_counts(self):
+        self.buds_pause_then_drop()
+        self.later(12)
+        self.run_quietly(self.h.device_came, self.CAR)
+        self.assertFalse(self.h.transport_up(self.BUDS + "/sep1/fd0"))
+        self.assertFalse(self.h.transport_up(self.CAR + "x/sep1/fd0"),
+                         "a path that only starts like the car's")
+        self.assertTrue(self.h.transport_up(self.CAR + "/sep1/fd0"))
+
+    def test_a_watch_dropping_later_keeps_the_handover(self):
+        """A second disconnect with nothing paused must not wipe the first."""
+        self.buds_pause_then_drop()
+        self.later(60)
+        self.run_quietly(self.h.device_left, "/org/bluez/hci0/dev_WATCH", [])
+        self.assertTrue(self.h.armed())
+
+    def test_nothing_paused_nothing_resumed(self):
+        self.run_quietly(self.h.device_left, self.BUDS, [])
+        self.assertFalse(self.car_arrives()[0])
+        self.assertEqual(self.session.played, [])
+
+    def test_a_player_that_refuses_to_play_is_reported(self):
+        self.buds_pause_then_drop()
+        self.session.fail_on.add(":1.7")
+        self.session.status[":1.7"] = "Paused"
+        orig = self.session.call_sync
+
+        def get_works(dest, path, iface, method, *rest):
+            if method == "Get":
+                return FakeVariant(["Paused"])
+            return orig(dest, path, iface, method, *rest)
+        self.session.call_sync = get_works
+        self.assertEqual(self.car_arrives()[2], [])
+        self.assertIn("could not resume", self.out.getvalue())
+
+    def test_it_resumes_once(self):
+        self.buds_pause_then_drop()
+        self.car_arrives()
+        self.run_quietly(self.h.resume)
+        self.assertEqual(self.session.played, [":1.7"])
+
+    def test_wired_up_end_to_end(self):
+        """main(): the signals reach the Handover, and play waits for A2DP."""
+        session = FakeBus(names=[self.EMILIA], status={":1.7": "Paused"})
+        system = BluezBus(["0000110b-0000-1000-8000-00805f9b34fb"])
+        system_call = system.call_sync
+
+        def managed(dest, path, iface, method, *rest):
+            if method == "GetManagedObjects":
+                return FakeVariant([{}])   # no link yet when it connects
+            return system_call(dest, path, iface, method, *rest)
+        system.call_sync = managed
+        buses = [system, session]
+        timers = []
+        originals = (watcher.Gio.bus_get_sync, watcher.GLib.MainLoop,
+                     watcher.GLib.timeout_add)
+        watcher.Gio.bus_get_sync = lambda kind, _c: buses.pop(0)
+        watcher.GLib.MainLoop = lambda: type("Loop", (), {"run": lambda self: None})()
+        watcher.GLib.timeout_add = lambda ms, fn: timers.append((ms, fn))
+        try:
+            with redirect_stdout(self.out):
+                watcher.main()
+                on_props = system.subscriptions[0][-1]
+                on_added = system.subscriptions[1][-1]
+                on_player = session.subscriptions[0][-1]
+                on_player(None, ":1.7", None, None, None, FakeVariant(
+                    ["org.mpris.MediaPlayer2.Player",
+                     {"PlaybackStatus": "Paused"}, []]))
+                on_props(None, None, self.BUDS, None, None, FakeVariant(
+                    ["org.bluez.Device1", {"Connected": False}, []]))
+                timers.clear()   # the pause retries, not what is tested here
+                on_props(None, None, self.CAR, None, None, FakeVariant(
+                    ["org.bluez.Device1", {"Connected": True}, []]))
+                self.assertEqual([ms for ms, _ in timers],
+                                 [watcher.TRANSPORT_WAIT_S * 1000])
+                self.assertEqual(session.played, [], "not before the link")
+                on_added(None, None, None, None, None, FakeVariant(
+                    [self.CAR + "/sep1/fd0",
+                     {"org.bluez.MediaTransport1": {}}]))
+                self.assertEqual(timers[-1][0], watcher.RESUME_DELAY_MS)
+                timers[-1][1]()
+                self.assertEqual(session.played, [":1.7"])
+                timers[0][1]()   # the give-up timer, after the fact: harmless
+                self.assertNotIn("brought no audio link", self.out.getvalue())
+        finally:
+            (watcher.Gio.bus_get_sync, watcher.GLib.MainLoop,
+             watcher.GLib.timeout_add) = originals
+
+    def test_a_device_without_a2dp_gets_nothing(self):
+        self.buds_pause_then_drop()
+        self.later(12)
+        self.run_quietly(self.h.device_came, self.CAR)
+        # what give_up() does when the wait runs out
+        self.h.players.clear()
+        self.h.waiting = None
+        self.assertFalse(self.h.transport_up(self.CAR + "/sep1/fd0"))
 
 
 class FakePactl:
