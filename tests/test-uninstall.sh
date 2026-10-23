@@ -94,6 +94,12 @@ if [ -n "${STUB_ROOT:-}" ]; then
 fi
 exec /usr/bin/id "$@"
 EOF
+# usermod: install.sh adds the user to group pipewire. /etc/group is outside
+# what the sandbox compares, and read-only in there.
+cat > "$S/usermod" <<'EOF'
+#!/bin/sh
+printf 'usermod %s\n' "$*" >> "$STUB_LOG"
+EOF
 # systemctl: every call logged; enable/disable/is-enabled/cat on real files.
 cat > "$S/systemctl" <<'EOF'
 #!/bin/bash

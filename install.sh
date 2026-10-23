@@ -113,6 +113,17 @@ sudo chmod 0755 /var/lib/furios-audio
 # gets past any mask with a copy of the unit under $HOME.
 sudo /usr/local/bin/audioctl migrate
 
+# Realtime for PipeWire's data loops. Debian grants it to the group pipewire
+# (limits.d/25-pw-rlimits.conf) and nobody was in it, so the Bluetooth encoder
+# ran in SCHED_OTHER and the headset dropped out whenever the one core batman
+# leaves online was busy. The portal and RTKit do not work here - see
+# realtime_state in audioctl. Left in place by uninstall.sh: it is what
+# Debian's own PipeWire expects, not something of ours.
+if getent group pipewire >/dev/null && ! id -nG | tr ' ' '\n' | grep -qx pipewire; then
+    sudo usermod -aG pipewire "$(id -un)"
+    echo "  added $(id -un) to group pipewire - realtime audio after the next reboot"
+fi
+
 systemctl --user daemon-reload
 systemctl --user enable furios-audio-apply.service furios-audio-verify.service
 

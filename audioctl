@@ -2188,6 +2188,43 @@ aac_status() {
 
 STATUS_UNITS="pulseaudio.service pipewire.service pipewire-pulse.service wireplumber.service furios-pw-tunnel.service"
 
+# Whether PipeWire's data loops got realtime scheduling. Without it a busy CPU
+# delays the Bluetooth encoder, and the headset drops out several times a
+# second - and with batman taking all but one core offline whenever the screen
+# is dark, the CPU is busy all the time. Measured 23.10.: about 8 underruns a
+# second in SCHED_OTHER, none in SCHED_FIFO on the same single core.
+#
+# Only the rlimit route works on this phone. The realtime portal fails on the
+# 4.19 kernel ("Could not get pidns"), and RTKit, installed, answered every
+# request with AccessDenied although polkit allowed it. The limits come from
+# /etc/security/limits.d/25-pw-rlimits.conf, for the group pipewire only.
+#
+# The two probes are functions of their own, so the tests can answer them
+# rather than whatever PipeWire the machine running the suite has.
+pw_data_loop_classes() {
+    local pids
+    pids=$(pgrep -u "$(id -u)" -x pipewire 2>/dev/null | paste -sd, -)
+    [ -n "$pids" ] || return 0
+    ps -L -o cls=,comm= -p "$pids" 2>/dev/null | awk '$2 ~ /^data-loop/ {print $1}'
+}
+pw_group_member() { id -nG 2>/dev/null | tr ' ' '\n' | grep -qx pipewire; }
+
+# ok, no-group (fix: usermod, then reboot), relogin (in the group, but this
+# session was started before - limits come with a login), or nothing at all
+# when no PipeWire is running.
+realtime_state() {
+    local classes
+    classes=$(pw_data_loop_classes)
+    [ -n "$classes" ] || return 0
+    if printf '%s\n' "$classes" | grep -qxE 'FF|RR'; then
+        echo ok
+    elif pw_group_member; then
+        echo relogin
+    else
+        echo no-group
+    fi
+}
+
 json_str() {
     local v=${1//\\/\\\\}
     v=${v//\"/\\\"}
@@ -2197,7 +2234,7 @@ json_str() {
 # For the app: the same answers as "status", as JSON, so the window does not
 # depend on how a line for people is worded.
 status_json() {
-    local eff rec sticky fell sinks u first=1 conflict bz aac chk
+    local eff rec sticky fell sinks u first=1 conflict bz aac chk rt
     eff=$(effective_profile)
     rec=$(current_profile)
     sticky=$(cat "$STICKY" 2>/dev/null || echo standard)
@@ -2211,6 +2248,8 @@ status_json() {
     printf '  "fell_back": %s,\n' "$([ -n "$fell" ] && json_str "$fell" || echo null)"
     printf '  "ofono_dropin_conflict": %s,\n' "$([ -n "$conflict" ] && json_str "$conflict" || echo null)"
     printf '  "pulse_server": %s,\n' "$(json_str "$(pulse_owner)")"
+    rt=$(realtime_state)
+    printf '  "realtime": %s,\n' "$([ -n "$rt" ] && json_str "$rt" || echo null)"
     chk=$(bluez5_fix_check)
     bz=$(bluez5_fix_status "$chk")
     aac=$(aac_status "$chk" | head -1)
@@ -2239,7 +2278,7 @@ status_json() {
 # a closing line naming the fix. Exit 1 when something does not work.
 status() {
     [ "${1:-}" = --json ] && { status_json; return 0; }
-    local eff rec sticky fell conflict sinks server u en ac problems=0 fix= bz aac chk
+    local eff rec sticky fell conflict sinks server u en ac problems=0 fix= bz aac chk rt
     local c_ok= c_bad= c_warn= c_b= c_0=
     if [ -t 1 ]; then
         c_ok=$'\033[32m'; c_bad=$'\033[31m'; c_warn=$'\033[33m'; c_b=$'\033[1m'; c_0=$'\033[0m'
@@ -2291,6 +2330,15 @@ status() {
         _bad "no sinks - nothing to play to"
         fix=${fix:-audioctl restart}
     fi
+    rt=$(realtime_state)
+    case "$rt" in
+    ok)       _ok "audio threads run in realtime" ;;
+    relogin)  _bad "audio threads without realtime - Bluetooth will drop out"
+              printf '        in group pipewire already; its limits come with the next login\n'
+              fix=${fix:-reboot} ;;
+    no-group) _bad "audio threads without realtime - Bluetooth will drop out"
+              fix=${fix:-sudo usermod -aG pipewire $(id -un), then reboot} ;;
+    esac
 
     chk=$(bluez5_fix_check)
     bz=$(bluez5_fix_status "$chk")

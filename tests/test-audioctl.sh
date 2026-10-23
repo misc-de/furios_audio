@@ -184,6 +184,10 @@ with_audioctl() {
       : > "$LOCAL/pipewire-hal.conf"
       : > "$PLUGIN_DIR/libspa-droid.so"
       : > "$PLUGIN_DIR/libpipewire-module-pulse-tunnel.so"
+      # The scheduling class of PipeWire's data loops and the group, as the
+      # test says - not those of the PipeWire on the machine running this.
+      pw_data_loop_classes() { cat "$STUBDIR/rt-classes" 2>/dev/null; }
+      pw_group_member() { [ -e "$STUBDIR/rt-in-group" ]; }
       eval "$snippet" )
 }
 
@@ -1193,6 +1197,23 @@ printf '#!/bin/sh\nexit 1\n' > "$STUBDIR/bluez5-fix"
 check "a helper that answers nothing is not taken for applied" "yes" \
     "$(with_audioctl 'status' | grep -q "bluez5 fix not applied: the helper gave no answer" && echo yes || echo no)"
 rm -f "$STUBDIR/bluez5-fix"
+# Realtime: without it the headset dropped out ~8 times a second (23.10.).
+check "no PipeWire running, no realtime line" "no" \
+    "$(with_audioctl 'status' | grep -q "realtime" && echo yes || echo no)"
+printf 'FF\nTS\n' > "$STUBDIR/rt-classes"
+check "a data loop in SCHED_FIFO is ok" "yes" \
+    "$(with_audioctl 'status' | grep -q "ok    audio threads run in realtime" && echo yes || echo no)"
+printf 'TS\nTS\n' > "$STUBDIR/rt-classes"
+check "without realtime and the group it fails, naming usermod" "1 yes" \
+    "$(with_audioctl 'rm -f "$STICKY"; out=$(status); rc=$?; printf "%s " $rc; printf "%s" "$out" | grep -q "fix with: sudo usermod -aG pipewire .*, then reboot$" && echo yes || echo no')"
+touch "$STUBDIR/rt-in-group"
+check "in the group already, the fix is a reboot" "yes" \
+    "$(with_audioctl 'rm -f "$STICKY"; status' | grep -q "fix with: reboot$" && echo yes || echo no)"
+check "and the JSON says so for the app" "relogin" \
+    "$(with_audioctl 'status --json' | python3 -c 'import json,sys; print(json.load(sys.stdin)["realtime"])' 2>/dev/null)"
+rm -f "$STUBDIR/rt-classes" "$STUBDIR/rt-in-group"
+check "and null without PipeWire" "None" \
+    "$(with_audioctl 'status --json' | python3 -c 'import json,sys; print(json.load(sys.stdin)["realtime"])' 2>/dev/null)"
 check "no colour codes without a terminal" "no" \
     "$(with_audioctl 'status' | grep -q $'\033\\[' && echo yes || echo no)"
 check "the help lists every profile" "yes" \

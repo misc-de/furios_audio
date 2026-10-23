@@ -279,6 +279,13 @@ if [ -n "$owner" ] && [ "$owner" != root ] && getent passwd "$owner" >/dev/null 
         [ -f "/var/lib/furios-audio/$f" ] && [ ! -L "/var/lib/furios-audio/$f" ] \
             && chown "$owner" "/var/lib/furios-audio/$f" || true
     done
+    # Realtime for PipeWire's data loops comes only from the limits of the
+    # group pipewire - see the same step in install.sh.
+    if getent group pipewire >/dev/null 2>&1 \
+            && ! id -nG "$owner" | tr ' ' '\n' | grep -qx pipewire; then
+        usermod -aG pipewire "$owner" \
+            && echo "Added $owner to group pipewire - realtime audio after the next reboot." || true
+    fi
 fi
 # What an older, root-based audioctl left in /etc/systemd/user: its drop-in
 # for pipewire, and a droid monitor renamed aside. Masks are not touched -
