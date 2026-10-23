@@ -1104,9 +1104,40 @@ static void test_apply_mode_details(void)
 	reset_all();
 	this = make_node(false, playback_info());
 	negotiate(this, 48000, 2);
-	check_int("normal mode with nothing open does nothing at all", 0,
+	check_int("normal mode with nothing open is accepted", 0,
 			apply_mode(this, "normal"));
-	check_int("and says nothing to the HAL", 0, hal_stub.mode_calls);
+	check_int("and still reaches the HAL - the mode lives in the module, "
+			"which stays loaded", 1, hal_stub.mode_calls);
+	check_int("as normal", AUDIO_MODE_NORMAL, hal_stub.mode);
+	check("without opening a stream for it", this->stream == NULL);
+	free_node(this);
+
+	/* 23.10.2026: the playback stream was destroyed in the middle of a call,
+	 * "normal" came 34 s later and never reached the HAL, which then stayed
+	 * in the call for hours. */
+	reset_all();
+	this = make_node(false, playback_info());
+	negotiate(this, 48000, 2);
+	apply_mode(this, "call");
+	hal_close(this);
+	check("the stream is gone during the call", this->hw == NULL);
+	hal_stub.mode_calls = 0;
+	check_int("hanging up is accepted", 0, apply_mode(this, "normal"));
+	check_int("and the HAL leaves the call", AUDIO_MODE_NORMAL, hal_stub.mode);
+	check_int("told exactly once", 1, hal_stub.mode_calls);
+	check("the node is no longer in a call", !this->in_call);
+	check("nor holds the hardware for one", !this->mode_holds_hal);
+	free_node(this);
+
+	reset_all();
+	this = make_node(false, playback_info());
+	negotiate(this, 48000, 2);
+	hal_stub.realcall = true;
+	apply_mode(this, "call");
+	hal_close(this);
+	apply_mode(this, "normal");
+	check_str("realcall is closed again without a stream too", "realcall=off",
+			hal_stub.last_parameters);
 	free_node(this);
 }
 

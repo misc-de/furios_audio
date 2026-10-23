@@ -2102,9 +2102,11 @@ static int apply_uplink_mute(struct impl *this, const char *value)
 
 static void clear_uplink_mute(struct impl *this)
 {
-	if (!uplink_muted || this->hw == NULL)
+	pa_droid_hw_module *hw = this->hw ? this->hw : hw_module_keepalive;
+
+	if (!uplink_muted || hw == NULL)
 		return;
-	if (pa_droid_set_parameters(this->hw, "Set_SpeechCall_UL_Mute=0") < 0) {
+	if (pa_droid_set_parameters(hw, "Set_SpeechCall_UL_Mute=0") < 0) {
 		spa_log_warn(this->log, NAME " call over, but the HAL did not take "
 				"the uplink mute back");
 		return;
@@ -2224,6 +2226,7 @@ static void reapply_audio_source(struct impl *this)
 
 static int apply_mode(struct impl *this, const char *mode)
 {
+	pa_droid_hw_module *hw;
 	audio_mode_t m;
 	int res;
 
@@ -2253,14 +2256,22 @@ static int apply_mode(struct impl *this, const char *mode)
 		this->mode_holds_hal = true;
 	}
 
-	if (!this->hw)
-		return 0;   /* nothing open, nothing to do */
+	/* The mode belongs to the HAL module, not to our stream, and the module
+	 * stays loaded for the life of the process (hw_module_keepalive). A
+	 * stream torn down during the call - a format teardown, a reopen that
+	 * failed - used to make "normal" a no-op here, and the HAL stayed in the
+	 * call until the next one: capture could no longer start (the HAL hands
+	 * out the call's mono voice tx), and the broken source, driving the
+	 * echo-cancel group, stopped every sink with it, Bluetooth included. */
+	hw = this->hw ? this->hw : hw_module_keepalive;
+	if (!hw)
+		return 0;   /* module never loaded, the HAL is still in its own mode */
 
 	/* Before the mode goes back: the next call must not start muted. */
 	if (m == AUDIO_MODE_NORMAL)
 		clear_uplink_mute(this);
 
-	if (!pa_droid_hw_set_mode(this->hw, m)) {
+	if (!pa_droid_hw_set_mode(hw, m)) {
 		spa_log_warn(this->log, NAME " audio mode \"%s\" rejected", mode);
 		return -EIO;
 	}
@@ -2272,9 +2283,9 @@ static int apply_mode(struct impl *this, const char *mode)
 	 * do it here. Only when the option is set - this particular MediaTek HAL
 	 * rejects the parameter anyway (-22), it is apparently a Qualcomm legacy.
 	 * The code stays for other devices. */
-	if (pa_droid_option(this->hw, DM_OPTION_REALCALL)) {
+	if (pa_droid_option(hw, DM_OPTION_REALCALL)) {
 		const char *param = this->in_call ? "realcall=on" : "realcall=off";
-		if (pa_droid_set_parameters(this->hw, param) < 0)
+		if (pa_droid_set_parameters(hw, param) < 0)
 			spa_log_warn(this->log, NAME " HAL rejects \"%s\"", param);
 		else
 			DIAG(this, "%s sent to the HAL", param);
